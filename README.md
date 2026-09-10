@@ -1,6 +1,6 @@
 ﻿<div align="center">
 
-# 🖥️ sysreseau-lab
+# 🖥️ SysReseauDevSecOps-lab
 ### Lab personnel d'ingénierie Système & Réseau — Master 2 IRS
 
 [![Linux](https://img.shields.io/badge/Linux-Ubuntu_22.04-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/)

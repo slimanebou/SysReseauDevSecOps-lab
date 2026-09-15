@@ -85,7 +85,7 @@ Chaque semaine est documentée avec les commandes apprises, les livrables produi
 
 | Semaine | Statut | Compétence principale | Livrable |
 |---|---|---|---|
-| S01 | ⬜ | Linux terminal | VM Ubuntu + scripts |
+| S01 | ✅ | Linux terminal | VM Ubuntu + scripts |
 | S02 | ⬜ | SSH + Bash | Script health_check.sh |
 | S03 | ⬜ | Stockage + Cron | LVM + backup_etc.sh |
 | S04 | ⬜ | Réseau + UFW | Cheatsheet réseau |

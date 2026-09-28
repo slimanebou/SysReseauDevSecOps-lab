@@ -2016,3 +2016,504 @@ journalctl -b
 ---
 
 *Semaine 02 terminée · Prochaine étape → [Semaine 03 — Stockage, logs & automatisation cron](../03-stockage-logs/README.md)*
+
+# Semaine 03 — Logs & Surveillance système
+
+> **Phase 1 — Administration Linux & Système**
+> Rythme : 3 soirs × 45 min · Statut : ✅ Terminé
+
+---
+
+## Objectif de la semaine
+
+Maîtriser l'architecture des logs Linux, savoir analyser des fichiers de logs avec les outils CLI (`grep`, `awk`, `sed`, `cut`, `sort`, `uniq`), configurer la rotation automatique avec `logrotate`, et surveiller un serveur en temps réel.
+
+---
+
+## Sommaire
+
+- [1. Architecture des logs Linux](#1-architecture-des-logs-linux)
+- [2. Analyser des logs](#2-analyser-des-logs)
+  - [grep et grep -E](#grep-et-grep--e)
+  - [awk](#awk)
+  - [sed](#sed)
+  - [cut](#cut)
+  - [sort](#sort)
+  - [uniq -c](#uniq--c)
+  - [wc -l](#wc--l)
+- [3. logrotate](#3-logrotate)
+- [4. Surveillance en temps réel](#4-surveillance-en-temps-réel)
+- [5. Exercice — Top 10 IPs SSH](#5-exercice--top-10-ips-ssh)
+- [Commandes clés apprises](#commandes-clés-apprises)
+- [Livrables & preuves](#livrables--preuves)
+- [Difficultés rencontrées & solutions](#difficultés-rencontrées--solutions)
+
+---
+
+## 1. Architecture des logs Linux
+
+### Le flux d'un log
+
+```
+Application / Kernel / Service
+         │
+         ▼
+     rsyslog          ← collecte et trie les messages
+         │
+         ▼
+   /var/log/          ← stockage sur disque
+```
+
+`rsyslog` est le démon central qui reçoit les messages de toutes les sources et les redistribue vers les bons fichiers selon des règles de filtrage définies dans `/etc/rsyslog.conf`.
+
+```bash
+systemctl status rsyslog        # Vérifier que rsyslog tourne
+cat /etc/rsyslog.conf           # Configuration principale
+ls /etc/rsyslog.d/              # Règles supplémentaires par application
+```
+
+---
+
+### Fichiers importants dans `/var/log/`
+
+| Fichier | Contenu | Quand le consulter |
+|---|---|---|
+| `syslog` | Messages système généraux | Premier réflexe en cas de problème |
+| `auth.log` | Authentifications, sudo, SSH | Détecter les tentatives d'intrusion |
+| `kern.log` | Messages du kernel | Erreurs matérielles, drivers |
+| `apt/history.log` | Paquets installés/supprimés | Tracer les changements système |
+| `apt/term.log` | Sortie complète d'apt | Déboguer une installation ratée |
+| `dpkg.log` | Actions dpkg bas niveau | Tracer chaque fichier installé |
+| `faillog` | Échecs de connexion | Comptes sous attaque |
+| `lastlog` | Dernières connexions par user | Audit des accès |
+
+```bash
+ls -lh /var/log/                # Lister tous les fichiers de log avec leur taille
+sudo tail -f /var/log/syslog    # Surveiller syslog en temps réel
+sudo cat /var/log/auth.log      # Lire les logs d'authentification
+```
+
+---
+
+### Niveaux de sévérité
+
+| Niveau | Numéro | Signification |
+|---|---|---|
+| `emerg` | 0 | Système inutilisable |
+| `alert` | 1 | Action immédiate requise |
+| `crit` | 2 | Condition critique |
+| `err` | 3 | Erreur |
+| `warning` | 4 | Avertissement |
+| `notice` | 5 | Événement normal mais notable |
+| `info` | 6 | Information |
+| `debug` | 7 | Très verbeux — débogage |
+
+---
+
+## 2. Analyser des logs
+
+### `grep` et `grep -E`
+
+`grep` cherche un motif dans le contenu d'un fichier. `grep -E` active les **expressions régulières étendues** (ERE) pour des motifs plus puissants.
+
+```bash
+grep "Failed password" /var/log/auth.log        # Motif exact
+grep -i "error" /var/log/syslog                 # Insensible à la casse
+grep -n "sshd" /var/log/auth.log                # Avec numéro de ligne
+grep -v "debug" /var/log/syslog                 # Tout SAUF les lignes "debug"
+grep -c "Failed password" /var/log/auth.log     # Compter les occurrences
+grep -B 3 -A 3 "Failed password" /var/log/auth.log   # 3 lignes de contexte avant/après
+```
+
+```bash
+grep -E "error|warning|critical" /var/log/syslog
+grep -E "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" /var/log/auth.log
+```
+
+> `grep -E` permet d'utiliser `|` (ou), `{n}` (répétition), `+`, `?` sans les échapper.
+
+---
+
+### `awk`
+
+`awk` lit un fichier ligne par ligne et découpe chaque ligne en **champs** séparés par des espaces. `$1` = 1er champ, `$2` = 2ème, `$NF` = dernier champ.
+
+**Anatomie d'une ligne `auth.log` :**
+
+```
+Jan 15 10:23:44 debian sshd[1234]: Failed password for root from 192.168.1.50 port 54321 ssh2
+$1   $2    $3     $4      $5          $6      $7    $8   $9   $10    $11       $12   $13
+```
+
+`$11` = adresse IP de l'attaquant.
+
+```bash
+awk '{print $1, $9}' /var/log/auth.log                   # Afficher colonnes 1 et 9
+awk '/Failed/ {print $0}' /var/log/auth.log              # Lignes contenant "Failed"
+awk '/Failed password/ {print $11}' /var/log/auth.log   # Extraire l'IP (champ 11)
+awk '{print NF}' /var/log/auth.log                       # Afficher le nombre de champs
+awk 'NR>=10 && NR<=20 {print}' /var/log/syslog          # Lignes 10 à 20
+```
+
+---
+
+### `sed`
+
+`sed` (**Stream EDitor**) modifie le texte à la volée **sans toucher au fichier source**.
+
+```bash
+sed 's/error/ERREUR/' /var/log/syslog           # Remplacer première occurrence par ligne
+sed 's/error/ERREUR/g' /var/log/syslog          # Remplacer toutes les occurrences (g=global)
+sed -n '10,20p' /var/log/syslog                 # Afficher uniquement les lignes 10 à 20
+sed '/^$/d' /var/log/syslog                     # Supprimer les lignes vides
+sed '/debug/d' /var/log/syslog                  # Supprimer les lignes contenant "debug"
+sed -n '/Failed/p' /var/log/syslog              # Afficher uniquement les lignes "Failed"
+```
+
+---
+
+### `cut`
+
+`cut` extrait des colonnes définies par un **délimiteur** précis.
+
+```bash
+cut -d: -f1 /etc/passwd             # Champ 1 (username), délimiteur ":"
+cut -d: -f1,3 /etc/passwd           # Champs 1 et 3 (username + UID)
+cut -c1-10 /var/log/syslog          # Les 10 premiers caractères de chaque ligne
+cut -d' ' -f1-3 /var/log/syslog     # Les 3 premiers champs (= la date)
+```
+
+---
+
+### `sort`
+
+```bash
+sort fichier.txt                    # Tri alphabétique croissant
+sort -r fichier.txt                 # Tri alphabétique décroissant
+sort -n fichier.txt                 # Tri numérique
+sort -rn fichier.txt                # Tri numérique décroissant
+sort -k2 fichier.txt                # Trier sur la 2ème colonne
+sort -u fichier.txt                 # Supprimer les doublons après tri
+```
+
+---
+
+### `uniq -c`
+
+`uniq` supprime les lignes **consécutives** identiques. L'option `-c` ajoute le compteur devant chaque ligne.
+
+```bash
+sort fichier.txt | uniq             # Supprimer les doublons
+sort fichier.txt | uniq -c         # Compter les occurrences
+sort fichier.txt | uniq -c | sort -rn   # Trier par fréquence décroissante
+```
+
+> `uniq` doit **toujours** être précédé de `sort`. Il ne détecte que les doublons consécutifs.
+
+---
+
+### `wc -l`
+
+```bash
+wc -l /var/log/syslog                               # Nombre total de lignes
+grep "Failed password" /var/log/auth.log | wc -l   # Compter les tentatives SSH
+grep -E "error|warning" /var/log/syslog | wc -l    # Compter erreurs + warnings
+```
+
+---
+
+## 3. logrotate
+
+### Pourquoi logrotate
+
+Sans rotation, les fichiers de log grossissent indéfiniment jusqu'à saturer le disque. `logrotate` tourne automatiquement via `/etc/cron.daily/logrotate` et :
+
+- Archive les vieux logs (compresse en `.gz`)
+- Crée un nouveau fichier vide
+- Supprime les archives trop anciennes
+
+### Configuration principale
+
+```bash
+cat /etc/logrotate.conf
+```
+
+```
+weekly          # Rotation hebdomadaire par défaut
+rotate 4        # Garder 4 archives
+create          # Créer un nouveau fichier après rotation
+compress        # Compresser les archives en .gz
+include /etc/logrotate.d    # Inclure les règles des applications
+```
+
+---
+
+### Règles spécifiques dans `/etc/logrotate.d/`
+
+Chaque application installe sa propre règle dans ce dossier.
+
+```bash
+ls /etc/logrotate.d/            # Voir toutes les règles installées
+cat /etc/logrotate.d/nginx      # Exemple : règle nginx
+```
+
+**Exemple de règle nginx commentée :**
+
+```
+/var/log/nginx/*.log {
+    daily                           # Rotation quotidienne
+    missingok                       # Pas d'erreur si le fichier est absent
+    rotate 14                       # Garder 14 archives
+    compress                        # Compresser en .gz
+    delaycompress                   # Compresser à partir de la 2ème rotation
+    notifempty                      # Ne pas tourner si le fichier est vide
+    create 0640 www-data adm        # Créer le nouveau fichier avec ces droits
+    sharedscripts                   # Scripts pre/post exécutés une seule fois
+    postrotate
+        /usr/sbin/nginx -s reopen   # Dire à nginx de rouvrir ses fichiers de log
+    endscript
+}
+```
+
+---
+
+### Directives importantes
+
+| Directive | Signification |
+|---|---|
+| `daily` / `weekly` / `monthly` | Fréquence de rotation |
+| `rotate N` | Nombre d'archives à conserver |
+| `compress` | Compresser en `.gz` |
+| `delaycompress` | Compresser à partir de la 2ème rotation (pas la plus récente) |
+| `missingok` | Pas d'erreur si le fichier est absent |
+| `notifempty` | Ne pas tourner si le fichier est vide |
+| `create MODE USER GROUP` | Créer le nouveau fichier avec ces droits |
+| `postrotate / endscript` | Script exécuté après la rotation |
+
+---
+
+### Créer une règle custom
+
+```bash
+sudo nano /etc/logrotate.d/monapp
+```
+
+```
+/var/log/monapp.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
+```
+
+```bash
+sudo logrotate -d /etc/logrotate.d/monapp    # Tester sans rien modifier (dry-run)
+sudo logrotate -f /etc/logrotate.d/monapp    # Forcer la rotation immédiatement
+```
+
+---
+
+## 4. Surveillance en temps réel
+
+### `tail -f`
+
+```bash
+sudo tail -f /var/log/syslog                    # Suivre syslog en temps réel
+sudo tail -f /var/log/auth.log                  # Suivre les connexions
+sudo tail -n 50 -f /var/log/syslog              # 50 dernières lignes puis suivre
+sudo tail -f /var/log/syslog /var/log/auth.log  # Suivre plusieurs fichiers
+```
+
+> `Ctrl+C` pour arrêter le suivi.
+
+---
+
+### `multitail` — plusieurs logs dans un seul terminal
+
+```bash
+sudo apt install multitail
+
+sudo multitail /var/log/syslog /var/log/auth.log              # 2 logs côte à côte
+sudo multitail -s 3 /var/log/syslog /var/log/auth.log /var/log/kern.log   # 3 logs
+```
+
+**Raccourcis dans multitail :**
+
+| Touche | Action |
+|---|---|
+| `q` | Quitter |
+| `b` | Remonter dans l'historique |
+| `h` | Afficher l'aide |
+
+---
+
+## 5. Exercice — Top 10 IPs SSH
+
+**Objectif :** Extraire de `auth.log` les 10 adresses IP ayant fait le plus de tentatives de connexion SSH échouées.
+
+### Comprendre la structure d'une ligne auth.log
+
+```
+Jan 15 10:23:44 debian sshd[1234]: Failed password for root from 192.168.1.50 port 54321 ssh2
+$1   $2    $3     $4      $5          $6      $7    $8   $9   $10    $11       $12   $13
+```
+
+Le mot-clé est `Failed password`. L'IP est toujours le **11ème champ**.
+
+---
+
+### Solution complète
+
+```bash
+sudo awk '/Failed password/ {print $11}' /var/log/auth.log \
+  | sort \
+  | uniq -c \
+  | sort -rn \
+  | head -10
+```
+
+---
+
+### Décortiqué étape par étape
+
+```bash
+# Étape 1 : extraire l'IP (champ 11) des lignes "Failed password"
+sudo awk '/Failed password/ {print $11}' /var/log/auth.log
+
+# Étape 2 : trier pour regrouper les IPs identiques (obligatoire avant uniq)
+| sort
+
+# Étape 3 : compter les occurrences de chaque IP
+| uniq -c
+
+# Étape 4 : retrier par nombre décroissant
+| sort -rn
+
+# Étape 5 : garder les 10 premières
+| head -10
+```
+
+---
+
+### Exemple de sortie
+
+```
+    847 185.234.219.45
+    412 103.99.0.122
+    389 45.146.164.110
+    201 185.220.101.33
+    198 23.129.64.133
+    156 89.248.167.131
+    134 198.235.24.155
+     98 167.94.145.60
+     87 80.82.77.139
+     71 62.210.230.100
+```
+
+---
+
+### Variante avec formatage lisible
+
+```bash
+sudo awk '/Failed password/ {print $11}' /var/log/auth.log \
+  | sort \
+  | uniq -c \
+  | sort -rn \
+  | head -10 \
+  | awk '{printf "Tentatives: %-6s | IP: %s\n", $1, $2}'
+```
+
+Sortie :
+
+```
+Tentatives: 847    | IP: 185.234.219.45
+Tentatives: 412    | IP: 103.99.0.122
+Tentatives: 389    | IP: 45.146.164.110
+```
+
+---
+
+### Commandes complémentaires
+
+```bash
+sudo grep -c "Failed password" /var/log/auth.log        # Total des tentatives
+sudo grep "185.234.219.45" /var/log/auth.log | tail -5  # Dernières tentatives d'une IP
+sudo grep "Accepted password" /var/log/auth.log         # Connexions réussies
+```
+
+---
+
+## Commandes clés apprises
+
+```bash
+# Architecture des logs
+ls -lh /var/log/
+systemctl status rsyslog
+cat /etc/rsyslog.conf
+
+# grep
+grep "Failed password" /var/log/auth.log
+grep -i -n -v -c "motif" fichier
+grep -E "error|warning" /var/log/syslog
+grep -B 3 -A 3 "motif" fichier
+
+# awk
+awk '{print $1, $11}' fichier
+awk '/motif/ {print $11}' fichier
+awk 'NR>=10 && NR<=20 {print}' fichier
+
+# sed
+sed 's/ancien/nouveau/g' fichier
+sed -n '10,20p' fichier
+sed '/debug/d' fichier
+
+# cut
+cut -d: -f1,3 /etc/passwd
+cut -d' ' -f1-3 /var/log/syslog
+
+# sort + uniq + wc
+sort fichier | uniq -c | sort -rn | head -10
+wc -l fichier
+grep "motif" fichier | wc -l
+
+# logrotate
+sudo logrotate -d /etc/logrotate.d/monapp
+sudo logrotate -f /etc/logrotate.d/monapp
+cat /etc/logrotate.conf
+ls /etc/logrotate.d/
+
+# Temps réel
+sudo tail -f /var/log/syslog
+sudo tail -n 50 -f /var/log/auth.log
+sudo multitail /var/log/syslog /var/log/auth.log
+```
+
+---
+
+## Livrables & preuves
+
+- [ ] Capture du résultat de `ls -lh /var/log/` sur la VM
+- [ ] Capture du top 10 IPs SSH (`awk + sort + uniq + head`)
+- [ ] Règle logrotate custom créée dans `/etc/logrotate.d/`
+- [ ] Capture de `logrotate -d` (dry-run) sur la règle custom
+- [ ] Capture de `multitail` avec 2 fichiers de log en simultané
+
+---
+
+## Difficultés rencontrées & solutions
+
+| Difficulté rencontrée | Solution appliquée |
+|---|---|
+| `uniq -c` ne compte pas correctement | Toujours faire `sort` avant `uniq` — il ne détecte que les doublons consécutifs |
+| `awk` retourne le mauvais champ pour l'IP | Compter les champs sur une ligne réelle avec `awk '{print NF}'` pour ajuster |
+| `logrotate -f` ne tourne pas car `notifempty` | Le fichier de log était vide — le remplir ou retirer `notifempty` pour tester |
+| `tail -f` s'arrête après rotation du log | Utiliser `tail -F` (majuscule) qui résiste à la rotation automatique |
+| `grep -E` ne matche pas le motif attendu | Tester le motif regex sur explainshell.com avant de l'utiliser |
+
+---
+
+*Semaine 03 terminée · Prochaine étape → [Semaine 04 — Réseau Linux & pare-feu UFW](../04-reseau-diagnostic/README.md)*

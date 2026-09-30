@@ -2517,3 +2517,495 @@ sudo multitail /var/log/syslog /var/log/auth.log
 ---
 
 *Semaine 03 terminée · Prochaine étape → [Semaine 04 — Réseau Linux & pare-feu UFW](../04-reseau-diagnostic/README.md)*
+
+# Semaine 04 — SSH sécurisé & fail2ban
+
+> **Phase 1 — Administration Linux & Système**
+> Rythme : 3 soirs × 45 min · Statut : ✅ Terminé
+
+---
+
+## Objectif de la semaine
+
+Maîtriser le protocole SSH, générer des clés ED25519, sécuriser le démon sshd, configurer des alias de connexion et déployer fail2ban pour bloquer automatiquement les attaquants.
+
+---
+
+## Sommaire
+
+- [1. Le protocole SSH](#1-le-protocole-ssh)
+- [2. Générer une paire de clés ED25519](#2-générer-une-paire-de-clés-ed25519)
+- [3. Déployer la clé sur le serveur](#3-déployer-la-clé-sur-le-serveur)
+- [4. Alias de connexion — ~/.ssh/config](#4-alias-de-connexion--sshconfig)
+- [5. Sécuriser sshd_config](#5-sécuriser-sshd_config)
+- [6. fail2ban](#6-fail2ban)
+- [7. SECURITY.md](./SECURITY.md)
+- [Commandes clés apprises](#commandes-clés-apprises)
+- [Livrables & preuves](#livrables--preuves)
+- [Difficultés rencontrées & solutions](#difficultés-rencontrées--solutions)
+
+---
+
+## 1. Le protocole SSH
+
+SSH (**Secure Shell**) est un protocole réseau qui permet d'administrer un serveur distant de façon **chiffrée et authentifiée**. Avant SSH, on utilisait Telnet — tout passait en clair sur le réseau, mot de passe inclus.
+
+### Flux d'une connexion SSH
+
+```
+Ton poste (client SSH)          Serveur distant (démon sshd)
+      │                                    │
+      │──── connexion TCP port 22 ────────>│
+      │<─── échange de clés (DH) ─────────│
+      │──── authentification ─────────────>│
+      │<─── session chiffrée ─────────────>│
+```
+
+---
+
+### L'échange de clés Diffie-Hellman
+
+Mécanisme qui permet à deux machines de **se mettre d'accord sur une clé de chiffrement sans jamais l'envoyer sur le réseau**.
+
+```
+Slimane                              Serveur
+   │                                    │
+   │── Couleur commune publique : JAUNE ─>│  (échangée en clair, pas grave)
+   │                                    │
+   │  Choisit secret : ROUGE           │  Choisit secret : BLEU
+   │  Mélange : JAUNE+ROUGE = ORANGE   │  Mélange : JAUNE+BLEU = VERT
+   │                                    │
+   │──────── envoie ORANGE ────────────>│
+   │<──────── reçoit VERT ──────────────│
+   │                                    │
+   │  VERT + ROUGE = MARRON            │  ORANGE + BLEU = MARRON
+   │                                    │
+   └──── Clé commune : MARRON ─────────┘
+         (jamais envoyée sur le réseau)
+```
+
+Un attaquant qui intercepte JAUNE + ORANGE + VERT ne peut pas retrouver MARRON sans connaître ROUGE ou BLEU.
+
+---
+
+### Clés publique / privée
+
+```
+Clé PRIVÉE                         Clé PUBLIQUE
+   │                                    │
+   │  Tu gardes sur ton poste          │  Tu déposes sur le serveur
+   │  NE JAMAIS partager               │  Peut être lue par tous
+   │  ~/.ssh/id_ed25519                │  ~/.ssh/authorized_keys (serveur)
+   │                                    │
+   └──── Prouve que tu possèdes ───────┘
+         la clé privée correspondante
+```
+
+**Déroulement de l'authentification par clé :**
+
+```
+Client                              Serveur
+  │                                    │
+  │──── "je veux me connecter" ───────>│
+  │<─── challenge chiffré ─────────────│  (chiffré avec ta clé publique)
+  │                                    │
+  │  Déchiffre avec la clé privée     │
+  │──── réponse au challenge ─────────>│
+  │<─── accès accordé ─────────────────│
+```
+
+Seul le possesseur de la clé privée peut répondre correctement au challenge.
+
+---
+
+## 2. Générer une paire de clés ED25519
+
+### ED25519 vs RSA 2048
+
+| Critère | RSA 2048 | ED25519 |
+|---|---|---|
+| Taille de clé | 2048 bits | 256 bits |
+| Vitesse | Lente | Très rapide |
+| Sécurité | Correcte | Excellente |
+| Recommandé 2024 | Non | ✅ Oui |
+
+ED25519 utilise les courbes elliptiques — 256 bits offrent une sécurité équivalente à RSA 3072 bits.
+
+---
+
+### Générer la paire de clés
+
+```bash
+ssh-keygen -t ed25519 -C "slimane@lab-vm"
+```
+
+```
+Generating public/private ed25519 key pair.
+Enter file in which to save the key (/home/slimane/.ssh/id_ed25519):
+# Entrée pour accepter le chemin par défaut
+
+Enter passphrase (empty for no passphrase):
+# Recommandé : entrer une passphrase
+# Protège la clé privée si ton poste est compromis
+```
+
+---
+
+### Vérifier les fichiers générés
+
+```bash
+ls -la ~/.ssh/
+```
+
+```
+drwx------ 2 slimane slimane 4096  .             ← 700 obligatoire
+-rw------- 1 slimane slimane  411  id_ed25519    ← 600 clé privée
+-rw-r--r-- 1 slimane slimane  101  id_ed25519.pub ← 644 clé publique
+```
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... slimane@lab-vm
+```
+
+> Les permissions du dossier `~/.ssh/` et de la clé privée sont critiques. Si elles sont trop ouvertes, SSH refuse de les utiliser.
+
+---
+
+## 3. Déployer la clé sur le serveur
+
+### `ssh-copy-id` — méthode simple
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub devops@192.168.10.10
+# Entrer le mot de passe une dernière fois
+# La clé est ajoutée dans ~/.ssh/authorized_keys sur le serveur
+```
+
+### Méthode manuelle
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+echo "ssh-ed25519 AAAAC3Nz..." >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+### Tester la connexion par clé
+
+```bash
+ssh -i ~/.ssh/id_ed25519 devops@192.168.10.10
+# Connexion réussie sans mot de passe système = clé fonctionnelle
+```
+
+---
+
+## 4. Alias de connexion — ~/.ssh/config
+
+Sans config, chaque connexion nécessite de taper l'IP, le port, le user et la clé. `~/.ssh/config` crée des **alias** pour simplifier.
+
+```bash
+nano ~/.ssh/config
+```
+
+```
+# Serveur lab principal
+Host lab
+    HostName 192.168.10.10
+    User devops
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+
+# Serveur DMZ
+Host lab-dmz
+    HostName 192.168.20.10
+    User devops
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+# Bastion (gateway)
+Host bastion
+    HostName 192.168.10.1
+    User admin
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+# Passer par le bastion pour atteindre les serveurs internes
+Host lab-interne
+    HostName 192.168.30.10
+    User devops
+    ProxyJump bastion
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+```bash
+chmod 600 ~/.ssh/config
+
+# Utilisation simplifiée
+ssh lab          # au lieu de : ssh -i ~/.ssh/id_ed25519 -p 2222 devops@192.168.10.10
+ssh lab-dmz
+ssh lab-interne  # passe automatiquement par le bastion
+```
+
+---
+
+## 5. Sécuriser sshd_config
+
+`/etc/ssh/sshd_config` est la configuration du **démon SSH côté serveur**.
+
+```bash
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak   # Sauvegarder avant
+sudo nano /etc/ssh/sshd_config
+```
+
+### Directives essentielles
+
+| Directive | Valeur | Raison |
+|---|---|---|
+| `Port` | `2222` | Réduire l'exposition aux scans automatisés |
+| `PermitRootLogin` | `no` | Forcer l'usage d'un compte dédié + sudo |
+| `PasswordAuthentication` | `no` | Rendre le brute-force inutile |
+| `PubkeyAuthentication` | `yes` | Activer l'auth par clé |
+| `AllowUsers` | `devops` | Liste blanche d'utilisateurs autorisés |
+| `MaxAuthTries` | `3` | Limiter les tentatives par connexion |
+| `LoginGraceTime` | `20` | Réduire la fenêtre d'authentification |
+| `X11Forwarding` | `no` | Désactiver les fonctions inutiles |
+| `ClientAliveInterval` | `300` | Fermer les sessions inactives |
+
+### Configuration complète recommandée
+
+```bash
+Port 2222
+AddressFamily inet
+
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+AllowUsers devops
+
+MaxAuthTries 3
+LoginGraceTime 20
+MaxSessions 5
+
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+X11Forwarding no
+AllowTcpForwarding no
+PrintMotd no
+```
+
+### Appliquer et vérifier
+
+```bash
+sudo sshd -t                          # Vérifier la syntaxe (aucun output = OK)
+sudo systemctl restart ssh            # Redémarrer sshd
+sudo ss -tlnp | grep sshd             # Vérifier le port d'écoute
+ssh -p 2222 devops@192.168.10.10      # Tester (garder l'ancienne session ouverte)
+```
+
+> ⚠️ Ne jamais fermer la session SSH active avant d'avoir testé la nouvelle config. Une erreur dans sshd_config peut bloquer l'accès au serveur.
+
+---
+
+## 6. fail2ban
+
+fail2ban surveille les logs en temps réel et bannit automatiquement via iptables les IPs qui dépassent le seuil de tentatives échouées.
+
+```
+/var/log/auth.log
+      │
+      ▼
+  fail2ban        ← surveille les logs
+      │
+      │  Trop de tentatives depuis une IP ?
+      ▼
+  iptables        ← ajoute une règle de blocage
+      │
+      ▼
+  IP bloquée      ← pour la durée configurée
+```
+
+### Installation
+
+```bash
+sudo apt install fail2ban
+sudo systemctl enable --now fail2ban
+systemctl status fail2ban
+```
+
+### Architecture de configuration
+
+```
+/etc/fail2ban/
+├── fail2ban.conf    ← config globale (ne pas modifier)
+├── jail.conf        ← jails par défaut (ne pas modifier)
+└── jail.local       ← tes surcharges (toujours modifier ici)
+```
+
+> La règle d'or : **ne jamais modifier les `.conf`**. Toujours créer/modifier le `.local` correspondant. Les `.local` survivent aux mises à jour.
+
+### Créer `jail.local`
+
+```bash
+sudo nano /etc/fail2ban/jail.local
+```
+
+```ini
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 3
+ignoreip = 127.0.0.1/8 192.168.10.0/24
+
+[sshd]
+enabled  = true
+port     = 2222
+filter   = sshd
+logpath  = /var/log/auth.log
+maxretry = 3
+bantime  = 3600
+findtime = 600
+```
+
+**Paramètres expliqués :**
+
+| Paramètre | Valeur | Signification |
+|---|---|---|
+| `bantime` | `3600` | Durée du ban en secondes (1h). `-1` = ban permanent |
+| `findtime` | `600` | Fenêtre de temps pour compter les tentatives (10 min) |
+| `maxretry` | `3` | Nombre de tentatives échouées avant ban |
+| `ignoreip` | `127.0.0.1/8` | IPs jamais bannies — toujours y mettre son propre réseau |
+
+### Redémarrer et vérifier
+
+```bash
+sudo systemctl restart fail2ban
+
+sudo fail2ban-client status           # Liste des jails actives
+sudo fail2ban-client status sshd      # Détails de la jail SSH
+sudo tail -f /var/log/fail2ban.log    # Suivre les bans en temps réel
+```
+
+### Gérer les bans
+
+```bash
+sudo fail2ban-client set sshd unbanip 192.168.10.5    # Débannir une IP
+sudo fail2ban-client set sshd banip 185.234.219.45    # Bannir manuellement
+```
+
+### Tester le fonctionnement
+
+```bash
+# Depuis une autre machine, faire 4 tentatives échouées
+ssh -p 2222 mauvaisuser@192.168.10.10   # × 4 fois
+
+# Vérifier le ban
+sudo fail2ban-client status sshd
+# Banned IP list: <ip-testée>
+
+# Vérifier dans les logs
+sudo tail /var/log/fail2ban.log
+# NOTICE [sshd] Ban <ip>
+```
+
+## 7. SECURITY.md
+
+Le fichier de documentation sécurité est disponible ici → [SECURITY.md](./SECURITY.md)
+
+## Type de clé
+
+ED25519 (Curve25519) — plus sécurisé et plus rapide que RSA 2048.
+
+## fail2ban
+
+| Paramètre | Valeur                   |
+|---|---|
+| maxretry  | 3 tentatives             |
+| findtime  | 600 secondes (10 min)    |
+| bantime   | 3600 secondes (1 heure)  |
+| Port      | 2222                     |
+| Log       | /var/log/auth.log        |
+
+## Checklist de validation
+
+- [x] Connexion par clé ED25519 fonctionnelle
+- [x] Connexion par mot de passe refusée
+- [x] Connexion root directe refusée
+- [x] fail2ban actif — jail sshd enabled
+- [x] Port changé à 2222
+- [x] Ban déclenché après 3 tentatives échouées
+```
+
+```bash
+git add SECURITY.md
+git commit -m "security: add SSH hardening and fail2ban documentation"
+git push
+```
+
+---
+
+## Commandes clés apprises
+
+```bash
+# Génération de clés
+ssh-keygen -t ed25519 -C "commentaire"
+cat ~/.ssh/id_ed25519.pub
+
+# Déploiement
+ssh-copy-id -i ~/.ssh/id_ed25519.pub devops@IP
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/config
+
+# Connexion
+ssh -i ~/.ssh/id_ed25519 -p 2222 devops@IP
+ssh lab                                # avec alias ~/.ssh/config
+
+# sshd
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+sudo sshd -t                           # Vérifier la syntaxe
+sudo systemctl restart ssh
+sudo ss -tlnp | grep sshd
+
+# fail2ban
+sudo apt install fail2ban
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client status
+sudo fail2ban-client status sshd
+sudo fail2ban-client set sshd unbanip IP
+sudo fail2ban-client set sshd banip IP
+sudo tail -f /var/log/fail2ban.log
+```
+
+---
+
+## Livrables & preuves
+
+- [ ] Capture de `ls -la ~/.ssh/` avec les bonnes permissions
+- [ ] Capture de la connexion SSH par clé réussie (sans mot de passe)
+- [ ] Capture de `sudo ss -tlnp | grep sshd` sur le port 2222
+- [ ] Capture de `sudo fail2ban-client status sshd` avec la jail active
+- [ ] Capture d'un ban déclenché après 3 tentatives échouées
+- [ ] Fichier `SECURITY.md` pushé sur GitHub
+
+---
+
+## Difficultés rencontrées & solutions
+
+| Difficulté rencontrée | Solution appliquée |
+|---|---|
+| SSH refuse la clé privée | Vérifier les permissions : `chmod 600 ~/.ssh/id_ed25519` et `chmod 700 ~/.ssh/` |
+| Bloqué hors du serveur après modif sshd_config | Toujours garder une session active pendant les tests — ne jamais se déconnecter avant validation |
+| `sshd -t` retourne une erreur | Lire le message ligne par ligne — souvent une faute de frappe dans une directive |
+| fail2ban banne sa propre IP | Ajouter son réseau dans `ignoreip` dans `jail.local` |
+| fail2ban ne détecte pas les tentatives | Vérifier que `port = 2222` dans jail.local correspond au port dans sshd_config |
+| Connexion SSH refusée après `PasswordAuthentication no` | La clé n'était pas dans `authorized_keys` — utiliser `ssh-copy-id` avant de désactiver les mots de passe |
+
+---
+
+*Semaine 04 terminée · Prochaine étape → [Semaine 05 — DNS, DHCP & VPN WireGuard](../05-dns-dhcp-vpn/README.md)*

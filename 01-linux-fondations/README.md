@@ -5846,3 +5846,1071 @@ ip route get 10.8.0.1
 ---
 
 *Semaine 08 terminée · Prochaine étape → [Semaine 09 — Active Directory & Windows Server](../09-active-directory/README.md)*
+
+# Semaine 09 — Bash avancé : scripts robustes
+
+> **Phase 3 — Virtualisation & Services**
+> Rythme : 3 soirs × 45 min · Statut : ✅ Terminé
+
+---
+
+## Objectif de la semaine
+
+Écrire des scripts Bash production-ready : fonctions réutilisables, gestion des arguments courts et longs, gestion d'erreurs avec `set -Eeuo pipefail` et `trap`, heredocs, tableaux associatifs et expressions régulières. L'exercice final réécrit le script de monitoring S1 avec tous ces éléments.
+
+---
+
+## Sommaire
+
+- [1. Fonctions Bash](#1-fonctions-bash)
+- [2. Gestion des arguments](#2-gestion-des-arguments)
+- [3. Gestion d'erreurs](#3-gestion-derreurs)
+- [4. Here documents](#4-here-documents)
+- [5. Arrays et boucles avancées](#5-arrays-et-boucles-avancées)
+- [6. Expressions régulières avec =~](#6-expressions-régulières-avec-)
+- [7. Exercice — Réécriture du script monitoring](#7-exercice--réécriture-du-script-monitoring)
+- [Commandes clés apprises](#commandes-clés-apprises)
+- [Livrables & preuves](#livrables--preuves)
+- [Difficultés rencontrées & solutions](#difficultés-rencontrées--solutions)
+
+---
+
+## 1. Fonctions Bash
+
+### Syntaxe
+
+```bash
+saluer() {
+    local nom=${1:-inconnu}      # $1 avec valeur par défaut
+    echo "Bonjour, $nom"
+}
+
+saluer Alice        # Bonjour, Alice
+saluer              # Bonjour, inconnu
+```
+
+> Préférer `nom() { ... }` (POSIX) plutôt que `function nom { ... }` (spécifique Bash).
+
+**Règles :**
+- Une fonction doit être définie **avant** d'être appelée
+- Les arguments `$1`, `$2`, `$@`, `$#` sont propres à la fonction
+- `$0` reste le nom du script — utiliser `${FUNCNAME[0]}` pour le nom de la fonction
+
+---
+
+### Variables locales — toujours `local`
+
+```bash
+compteur=0
+mauvaise()  { compteur=99; }          # modifie la globale !
+correcte()  { local compteur=99; }    # variable locale
+
+correcte;  echo "$compteur"   # 0  ← globale préservée
+mauvaise;  echo "$compteur"   # 99 ← globale modifiée
+```
+
+> Toujours déclarer les variables de fonction avec `local`.
+
+---
+
+### `return` vs `echo` — deux canaux différents
+
+| | `return N` | `echo / printf` |
+|---|---|---|
+| Ce que c'est | Code de statut (0 à 255) | Texte sur stdout |
+| Récupération | `$?` ou dans un `if` | `valeur=$(fonction)` |
+| Usage | Succès/échec, test booléen | Renvoyer une donnée (chaîne, nombre) |
+
+```bash
+# return : un test
+est_pair() { (( $1 % 2 == 0 )); }
+
+if est_pair 4; then echo "pair"; fi
+
+# echo : une valeur
+ip_de() { ip -4 -br addr show "$1" | awk '{print $3}'; }
+
+adresse=$(ip_de ens33)
+echo "$adresse"             # 192.168.100.10/24
+```
+
+**Erreurs classiques :**
+
+| Erreur | Explication |
+|---|---|
+| `return 300` | Donne `300 % 256 = 44` — un return ne transporte pas de données |
+| `$()` crée un sous-shell | Une variable modifiée dans la fonction n'est pas modifiée dans l'appelant |
+| `echo` de debug dans une fonction capturée | Pollue le résultat — les messages vont sur `>&2` |
+
+---
+
+### Combiner statut et valeur
+
+```bash
+lire_port() {
+    local fichier=$1 port
+    port=$(grep -oP '^Port\s+\K[0-9]+' "$fichier") || return 1
+    echo "$port"
+}
+
+if port=$(lire_port /etc/ssh/sshd_config); then
+    echo "SSH sur le port $port"
+else
+    echo "Port non défini (22 par défaut)" >&2
+fi
+```
+
+---
+
+### Piège : `local x=$(commande)` masque l'erreur
+
+```bash
+f() { local x=$(false); echo "statut : $?"; }   # statut : 0 ← l'échec est PERDU
+f() { local x; x=$(false); }                    # ici, l'échec est visible
+```
+
+> ShellCheck signale cela (SC2155). Toujours **déclarer d'abord, affecter ensuite**.
+
+---
+
+### Fonctions utilitaires typiques
+
+```bash
+die()  { echo "ERREUR : $*" >&2; exit 1; }
+info() { printf '[%s] %s\n' "$(date +%T)" "$*"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "commande manquante : $1"; }
+
+need dig
+need curl
+```
+
+---
+
+## 2. Gestion des arguments
+
+### Variables spéciales
+
+| Variable | Contenu |
+|---|---|
+| `$0` | Nom du script tel qu'appelé |
+| `$1` … `$9`, `${10}` | Arguments positionnels |
+| `$#` | Nombre d'arguments |
+| `$@` | Tous les arguments, chacun séparé |
+| `$*` | Tous les arguments en une seule chaîne |
+| `$?` | Statut de la dernière commande |
+| `$$` | PID du shell courant |
+| `$!` | PID du dernier processus en arrière-plan |
+
+---
+
+### `"$@"` vs `"$*"` — toujours `"$@"`
+
+```bash
+test_args() {
+    for a in "$@"; do echo "  [$a]"; done
+}
+test_args "un" "deux mots" "trois"
+# [un]
+# [deux mots]    ← préservé en un seul argument
+# [trois]
+```
+
+> Avec `"$*"`, tout serait fusionné. Sans guillemets, `$@` redécoupe sur les espaces.
+
+---
+
+### `shift` et valeurs par défaut
+
+```bash
+echo "$1"; shift          # consomme $1
+shift 2                   # consomme deux arguments
+```
+
+```bash
+${var:-défaut}     # défaut si var est vide ou non définie
+${var:=défaut}     # idem, et AFFECTE var
+${var:?message}    # quitte avec un message si var est vide/non définie
+${var:+autre}      # "autre" si var est définie, sinon rien
+```
+
+---
+
+### Manipulations de chaînes
+
+```bash
+f="/var/log/nginx/access.log"
+echo "${f##*/}"           # access.log        (basename)
+echo "${f%/*}"            # /var/log/nginx    (dirname)
+echo "${f%.log}"          # /var/log/nginx/access
+echo "${f/nginx/apache}"  # remplace la 1re occurrence
+echo "${#f}"              # longueur de la chaîne
+```
+
+---
+
+### `getopts` — options courtes
+
+```bash
+while getopts ":vo:n:h" opt; do
+    case $opt in
+        v) verbose=true ;;
+        o) sortie=$OPTARG ;;
+        n) compte=$OPTARG ;;
+        h) echo "Usage : $0 [-v] [-o fichier] [-n nombre]"; exit 0 ;;
+        :)  echo "L'option -$OPTARG attend une valeur" >&2; exit 2 ;;
+        \?) echo "Option inconnue : -$OPTARG" >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))      # il ne reste que les arguments non-options
+```
+
+> `getopts` gère uniquement les options **courtes** (`-v`, `-o`). Pour les options longues, utiliser une boucle `while/case`.
+
+---
+
+### Options longues — boucle `while/case` (recommandée)
+
+```bash
+while (( $# > 0 )); do
+    case $1 in
+        -v|--verbose) verbose=true; shift ;;
+        -o|--output)  sortie=$2; shift 2 ;;
+        --output=*)   sortie=${1#*=}; shift ;;     # forme --output=fichier
+        -h|--help)    usage; exit 0 ;;
+        --)           shift; break ;;
+        -*)           echo "Option inconnue : $1" >&2; exit 2 ;;
+        *)            break ;;
+    esac
+done
+```
+
+> C'est la méthode la plus lisible et la plus portable — elle n'a pas besoin de commande externe.
+
+---
+
+## 3. Gestion d'erreurs
+
+### Le mode strict : `set -Eeuo pipefail`
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+```
+
+| Option | Effet |
+|---|---|
+| `-e` (errexit) | Le script s'arrête dès qu'une commande échoue |
+| `-u` (nounset) | Une variable non définie est une erreur |
+| `-o pipefail` | Le statut d'un pipeline est celui de la première commande en échec |
+| `-E` (errtrace) | Le `trap ERR` est hérité dans les fonctions |
+
+**Pourquoi `pipefail` ?**
+
+```bash
+false | cat; echo $?       # Sans pipefail : 0 ← l'échec est invisible
+set -o pipefail
+false | cat; echo $?       # Avec pipefail : 1
+```
+
+**Pourquoi `-u` ?**
+
+```bash
+rm -rf "$REPERTOIRE/"*     # si REPERTOIRE est vide → rm -rf /*  ← catastrophe
+```
+
+---
+
+### Les limites de `set -e`
+
+```bash
+# Ces cas NE déclenchent PAS l'arrêt :
+if grep -q x fichier; then ...; fi        # condition d'un if
+commande1 && commande2                     # liste &&/||
+commande || true                           # volontairement toléré
+
+# Ces cas déclenchent un arrêt surprenant :
+(( i++ ))              # si i vaut 0, expression = 0 → statut 1 → arrêt
+grep motif fichier     # aucune correspondance = statut 1 → arrêt
+```
+
+**Solutions :**
+
+```bash
+i=$(( i + 1 ))                      # au lieu de (( i++ ))
+grep -q motif fichier || true        # tolérer l'absence de correspondance
+```
+
+> `set -euo pipefail` est un **filet de sécurité**, pas une garantie. Tester explicitement les commandes critiques avec `cmd || die "..."`.
+
+---
+
+### Codes de sortie
+
+| Code | Signification |
+|---|---|
+| `0` | Succès |
+| `1` | Erreur générale |
+| `2` | Mauvais usage (arguments, syntaxe) |
+| `126` | Commande trouvée mais non exécutable |
+| `127` | Commande introuvable |
+| `128 + N` | Tué par le signal N (130 = Ctrl+C, 143 = SIGTERM) |
+
+```bash
+commande
+statut=$?           # sauvegarder IMMÉDIATEMENT : $? change à chaque commande
+
+# Statut de chaque commande d'un pipeline
+false | true | false; echo "${PIPESTATUS[@]}"   # 1 0 1
+```
+
+---
+
+### `trap` — exécuter du code sur un signal ou une sortie
+
+```bash
+trap 'commande' SIGNAL
+```
+
+| Pseudo-signal | Déclenché quand |
+|---|---|
+| `EXIT` | Le script se termine, quelle qu'en soit la raison |
+| `ERR` | Une commande échoue |
+| `INT` | Ctrl+C |
+| `TERM` | `kill PID` |
+| `HUP` | Fermeture du terminal |
+
+**Nettoyage de fichiers temporaires :**
+
+```bash
+tmp=$(mktemp -d)                    # répertoire temporaire unique et sûr
+cleanup() { rm -rf -- "$tmp"; }
+trap cleanup EXIT                   # exécuté dans TOUS les cas de sortie
+
+curl -sS https://example.com -o "$tmp/page.html"
+# même si curl échoue ou si on fait Ctrl+C : $tmp est supprimé
+```
+
+> Toujours utiliser `mktemp` (pas `/tmp/fichier.tmp` prévisible).
+
+**Diagnostic avec `trap ERR` :**
+
+```bash
+set -Eeuo pipefail
+trap 'echo "ERREUR ligne $LINENO : « $BASH_COMMAND » (code $?)" >&2' ERR
+
+cd /repertoire/inexistant
+# ERREUR ligne 4 : « cd /repertoire/inexistant » (code 1)
+```
+
+**Gérer Ctrl+C proprement :**
+
+```bash
+trap 'echo "Interrompu" >&2; exit 130' INT TERM
+trap cleanup EXIT                   # l'exit 130 déclenche aussi trap EXIT
+```
+
+---
+
+### Redirection de `stderr`
+
+```bash
+echo "message d'erreur" >&2          # sur stderr (réflexe pour tout message d'erreur)
+commande 2>erreurs.log               # stderr → fichier
+commande >sortie.log 2>&1            # les deux dans le même fichier
+commande &>tout.log                  # raccourci Bash
+commande 2>/dev/null                 # ignorer les erreurs
+commande 2>&1 | tee -a fichier.log   # écran + fichier
+
+# Rediriger tout le script
+exec >>"$LOG" 2>&1
+```
+
+> L'ordre compte : `cmd >fichier 2>&1` (correct) ≠ `cmd 2>&1 >fichier` (autre effet).
+
+---
+
+## 4. Here documents
+
+### Syntaxe de base
+
+```bash
+cat <<EOF
+Bonjour $USER,
+nous sommes le $(date +%F) sur $(hostname).
+EOF
+```
+
+> Le délimiteur (`EOF`) doit être **seul sur sa ligne**, sans espace avant.
+
+---
+
+### Les variantes
+
+| Forme | Comportement |
+|---|---|
+| `<<EOF` | Variables et `$()` développées |
+| `<<'EOF'` (guillemets) | Texte **littéral** — rien n'est développé |
+| `<<-EOF` | Supprime les tabulations en début de ligne |
+| `<<< "texte"` | Here-string : une chaîne sur l'entrée standard |
+
+---
+
+### Cas d'usage concrets
+
+**Aide d'un script :**
+
+```bash
+usage() {
+    cat <<EOF
+Usage : ${0##*/} [-v] [-o fichier] cible
+
+Options :
+  -v        mode verbeux
+  -o FICHIER  écrit le résultat dans FICHIER
+EOF
+}
+```
+
+**Écrire un fichier root (le `>` n'hérite pas de `sudo`) :**
+
+```bash
+sudo tee /etc/systemd/system/monitor.service >/dev/null <<'EOF'
+[Unit]
+Description=Surveillance système
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/monitor.sh -q -l /var/log/monitor.log -s ssh
+EOF
+```
+
+**Exécuter plusieurs commandes en SSH :**
+
+```bash
+ssh -p 2222 admin@192.168.100.20 'bash -s' <<'EOF'
+hostname
+ss -tulpn | grep :80
+df -h /
+EOF
+```
+
+**Here-string avec `read` :**
+
+```bash
+read -r ip masque <<< "192.168.100.10 255.255.255.0"
+echo "$ip / $masque"
+
+IFS=/ read -r reseau prefixe <<< "192.168.100.0/24"
+```
+
+> Pourquoi `<<<` plutôt que `echo | read` ? Parce que `read` dans un pipeline s'exécute dans un sous-shell — les variables sont perdues.
+
+---
+
+## 5. Arrays et boucles avancées
+
+### Tableaux indexés
+
+```bash
+services=(ssh nginx mariadb)         # déclaration
+services+=(bind9)                    # ajout en fin
+echo "${services[0]}"                # ssh
+echo "${services[-1]}"               # bind9 (dernier)
+echo "${services[@]}"                # tous les éléments
+echo "${#services[@]}"               # 4 (nombre d'éléments)
+echo "${!services[@]}"               # 0 1 2 3 (indices)
+echo "${services[@]:1:2}"            # nginx mariadb (tranche)
+unset 'services[1]'                  # supprime un élément
+```
+
+```bash
+# Lire un fichier dans un tableau
+mapfile -t lignes < /etc/hostname
+mapfile -t ports < <(ss -tln | awk 'NR>1 {print $4}')
+```
+
+> Les guillemets sont essentiels : `"${tableau[@]}"` préserve les éléments avec espaces.
+
+---
+
+### Tableaux associatifs (Bash ≥ 4)
+
+```bash
+declare -A port=( [ssh]=2222 [http]=80 [https]=443 )
+port[dns]=53
+
+echo "${port[ssh]}"              # 2222
+echo "${!port[@]}"               # les clés
+for nom in "${!port[@]}"; do
+    echo "$nom → ${port[$nom]}"
+done
+
+[[ -v port[ftp] ]] || echo "ftp absent"    # tester l'existence d'une clé
+```
+
+---
+
+### Boucles
+
+```bash
+# for sur liste, intervalle, glob
+for h in web db mail; do ping -c1 -W1 "$h.lab.internal" >/dev/null && echo "$h up"; done
+for i in {1..5}; do echo "$i"; done
+for f in /var/log/*.log; do echo "$f"; done      # glob : JAMAIS « for f in $(ls) »
+
+# for à la C
+for (( i = 0; i < 5; i++ )); do echo "$i"; done
+
+# while / until
+n=0
+while (( n < 3 )); do echo "$n"; n=$(( n + 1 )); done
+until ping -c1 -W1 192.168.100.10 >/dev/null 2>&1; do echo "attente..."; sleep 2; done
+
+# break/continue avec niveau
+for a in 1 2 3; do
+    for b in 1 2 3; do
+        (( b == 2 )) && continue       # saute ce b
+        (( a == 2 )) && break 2        # sort des DEUX boucles
+    done
+done
+```
+
+---
+
+### Lire un fichier ligne par ligne — la bonne forme
+
+```bash
+while IFS= read -r ligne; do
+    echo "→ $ligne"
+done < fichier.txt
+```
+
+| Option | Rôle |
+|---|---|
+| `IFS=` | Conserve les espaces de début et de fin |
+| `-r` | Empêche l'interprétation des `\` |
+| `< fichier` | Évite un sous-shell inutile (pas de `cat fichier |`) |
+
+---
+
+### Piège du sous-shell dans un pipeline
+
+```bash
+compte=0
+cat /etc/passwd | while read -r l; do compte=$(( compte + 1 )); done
+echo "$compte"       # 0 ← la boucle tournait dans un sous-shell !
+
+# Solution : substitution de processus
+compte=0
+while read -r l; do compte=$(( compte + 1 )); done < <(cat /etc/passwd)
+echo "$compte"       # correct
+```
+
+---
+
+### Tester des ports avec un tableau associatif
+
+```bash
+declare -A services=( [ssh]=2222 [http]=80 [https]=443 [dns]=53 )
+hote=${1:-127.0.0.1}
+
+for nom in "${!services[@]}"; do
+    p=${services[$nom]}
+    if (timeout 1 bash -c ": < /dev/tcp/$hote/$p") 2>/dev/null; then
+        printf '%-6s %-5s OUVERT\n' "$nom" "$p"
+    else
+        printf '%-6s %-5s fermé/filtré\n' "$nom" "$p"
+    fi
+done
+```
+
+---
+
+## 6. Expressions régulières avec `=~`
+
+### Principe
+
+Dans `[[ ... ]]` uniquement, `=~` teste une expression régulière étendue (ERE). Les captures vont dans `BASH_REMATCH`.
+
+```bash
+texte="serveur-web-03"
+if [[ $texte =~ ^serveur-([a-z]+)-([0-9]+)$ ]]; then
+    echo "match : ${BASH_REMATCH[0]}"    # serveur-web-03
+    echo "rôle  : ${BASH_REMATCH[1]}"   # web
+    echo "num   : ${BASH_REMATCH[2]}"   # 03
+fi
+```
+
+---
+
+### Règles importantes
+
+| Règle | Explication |
+|---|---|
+| Pas de guillemets autour de la regex | Entre guillemets, elle devient littérale |
+| Stocker la regex dans une variable | Évite les problèmes d'échappement |
+| `=~` ≠ `==` | `==` est un glob shell, `=~` est une vraie regex |
+| Classes POSIX | `[[:digit:]]`, `[[:alpha:]]`, `[[:space:]]` — préférer à `\d`, `\w` |
+
+```bash
+re='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+[[ $ip =~ $re ]]
+```
+
+---
+
+### Valider une adresse IPv4
+
+```bash
+est_ipv4() {
+    local ip=$1
+    local re='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$'
+    [[ $ip =~ $re ]] || return 1
+    local octet
+    for octet in "${BASH_REMATCH[@]:1}"; do
+        (( 10#$octet <= 255 )) || return 1    # 10# évite l'interprétation octale de 08, 09
+    done
+}
+
+est_ipv4 192.168.100.20  && echo "valide"
+est_ipv4 192.168.100.256 || echo "invalide"
+```
+
+---
+
+### Analyser une ligne de log nginx
+
+```bash
+ligne='192.168.1.15 - - [01/Oct/2026:10:15:02 +0200] "GET /index.html HTTP/1.1" 200 612'
+re='^([0-9.]+) .*\[([^]]+)\] "([A-Z]+) ([^ ]+) [^"]*" ([0-9]{3}) ([0-9]+)$'
+
+if [[ $ligne =~ $re ]]; then
+    ip=${BASH_REMATCH[1]}
+    methode=${BASH_REMATCH[3]}
+    url=${BASH_REMATCH[4]}
+    code=${BASH_REMATCH[5]}
+    echo "$ip a fait $methode $url → HTTP $code"
+fi
+# 192.168.1.15 a fait GET /index.html → HTTP 200
+```
+
+---
+
+### Valider un nom d'hôte et un port
+
+```bash
+[[ $h =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || echo "nom d'hôte invalide"
+[[ $p =~ ^[0-9]+$ ]] && (( p >= 1 && p <= 65535 )) || echo "port invalide"
+```
+
+---
+
+### Outils d'analyse de scripts
+
+```bash
+shellcheck script.sh          # détecte guillemets manquants, local x=$(), etc.
+bash -n script.sh             # vérifie la syntaxe sans exécuter
+bash -x script.sh             # trace chaque commande (debug)
+export PS4='+ ${BASH_SOURCE##*/}:${LINENO}: '   # trace plus lisible
+```
+
+---
+
+## 7. Exercice — Réécriture du script monitoring
+
+### Version S1 (point de départ)
+
+```bash
+#!/bin/bash
+echo "=== Monitoring ==="
+date
+echo "CPU :"
+top -bn1 | grep "Cpu(s)"
+echo "RAM :"
+free -m
+echo "Disque :"
+df -h
+echo "Service ssh :"
+systemctl status ssh
+```
+
+**Problèmes :**
+
+| Problème | Impact |
+|---|---|
+| Affichage brut sans décision | Inutilisable par cron ou supervision |
+| Aucun code de sortie | Les outils ne savent pas si c'est OK ou pas |
+| Valeurs codées en dur | Pas configurable |
+| Aucune gestion d'erreur | Echec silencieux |
+| Code monolithique | Impossible à tester ou réutiliser |
+
+---
+
+### Version v2 — `monitor.sh`
+
+```bash
+#!/usr/bin/env bash
+#
+# monitor.sh - Surveillance CPU / mémoire / disques / services
+# Codes de sortie : 0 = OK | 1 = alerte(s) | 2 = erreur d'usage | 3 = erreur interne
+
+set -Eeuo pipefail
+
+# ─── Constantes ─────────────────────────────────────────────────────────────
+readonly SCRIPT_NAME=${0##*/}
+readonly VERSION="2.0"
+readonly EX_OK=0 EX_ALERT=1 EX_USAGE=2 EX_SOFTWARE=3
+readonly LOCK_DIR="/tmp/${SCRIPT_NAME}.lock"
+
+# ─── Paramètres (modifiables) ─────────────────────────────────────────────
+CPU_THRESHOLD=80
+MEM_THRESHOLD=80
+DISK_THRESHOLD=85
+LOG_FILE=""
+QUIET=false
+LOCK_HELD=false
+SERVICES=()
+ALERTS=()
+
+# ─── Journalisation ───────────────────────────────────────────────────────
+log() {
+    local level=$1; shift
+    local line
+    line="$(date '+%F %T') [$level] $*"
+
+    case $level in
+        ERROR) printf '%s\n' "$line" >&2 ;;
+        INFO)  [[ $QUIET == true ]] || printf '%s\n' "$line" ;;
+        *)     printf '%s\n' "$line" ;;
+    esac
+
+    if [[ -n $LOG_FILE ]]; then
+        printf '%s\n' "$line" >> "$LOG_FILE"
+    fi
+}
+
+die() {
+    local code=$1; shift
+    log ERROR "$*"
+    exit "$code"
+}
+
+usage() {
+    cat <<EOF
+Usage : $SCRIPT_NAME [options]
+
+Options :
+  -c, --cpu SEUIL        seuil CPU en %            (défaut : $CPU_THRESHOLD)
+  -m, --mem SEUIL        seuil mémoire en %        (défaut : $MEM_THRESHOLD)
+  -d, --disk SEUIL       seuil disque en %         (défaut : $DISK_THRESHOLD)
+  -s, --service NOM      service à vérifier (répétable)
+  -l, --log FICHIER      écrire aussi dans FICHIER
+  -q, --quiet            n'afficher que les alertes et erreurs
+  -h, --help             afficher cette aide
+  -V, --version          afficher la version
+
+Codes de sortie : 0 OK, 1 alerte(s), 2 erreur d'usage, 3 erreur interne.
+
+Exemples :
+  $SCRIPT_NAME
+  $SCRIPT_NAME -c 90 -m 70 -s ssh -s nginx
+  $SCRIPT_NAME --disk 50 --log /var/log/monitor.log --quiet
+EOF
+}
+
+# ─── Traps ────────────────────────────────────────────────────────────────
+on_error() { log ERROR "Échec ligne $1 (code $3) : $2"; }
+cleanup()  { [[ $LOCK_HELD == true ]] && rmdir "$LOCK_DIR" 2>/dev/null || true; }
+
+trap 'on_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
+trap cleanup EXIT
+trap 'log WARN "Interruption reçue"; exit 130' INT TERM
+
+# ─── Analyse des arguments ─────────────────────────────────────────────────
+need_value() { (( $# >= 2 )) || die "$EX_USAGE" "L'option $1 attend une valeur"; }
+
+validate_percent() {
+    local name=$1 value=$2
+    if [[ ! $value =~ ^[0-9]{1,3}$ ]] || (( 10#$value < 1 || 10#$value > 100 )); then
+        die "$EX_USAGE" "Seuil $name invalide : '$value' (entier entre 1 et 100)"
+    fi
+}
+
+parse_args() {
+    while (( $# > 0 )); do
+        case $1 in
+            -c|--cpu)     need_value "$@"; CPU_THRESHOLD=$2;  shift 2 ;;
+            -m|--mem)     need_value "$@"; MEM_THRESHOLD=$2;  shift 2 ;;
+            -d|--disk)    need_value "$@"; DISK_THRESHOLD=$2; shift 2 ;;
+            -s|--service) need_value "$@"; SERVICES+=("$2");  shift 2 ;;
+            -l|--log)     need_value "$@"; LOG_FILE=$2;       shift 2 ;;
+            -q|--quiet)   QUIET=true; shift ;;
+            -h|--help)    usage; exit "$EX_OK" ;;
+            -V|--version) echo "$SCRIPT_NAME $VERSION"; exit "$EX_OK" ;;
+            --)           shift; break ;;
+            -*)           usage >&2; die "$EX_USAGE" "Option inconnue : $1" ;;
+            *)            die "$EX_USAGE" "Argument inattendu : $1" ;;
+        esac
+    done
+    validate_percent "CPU"     "$CPU_THRESHOLD"
+    validate_percent "mémoire" "$MEM_THRESHOLD"
+    validate_percent "disque"  "$DISK_THRESHOLD"
+    local svc re='^[A-Za-z0-9@._-]+$'
+    for svc in "${SERVICES[@]}"; do
+        [[ $svc =~ $re ]] || die "$EX_USAGE" "Nom de service invalide : '$svc'"
+    done
+}
+
+# ─── Préparation ──────────────────────────────────────────────────────────
+check_dependencies() {
+    local cmd
+    local -a needed=(awk df sleep date hostname)
+    (( ${#SERVICES[@]} == 0 )) || needed+=(systemctl)
+    for cmd in "${needed[@]}"; do
+        command -v "$cmd" >/dev/null || die "$EX_SOFTWARE" "Commande requise : $cmd"
+    done
+}
+
+acquire_lock() {
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        LOCK_HELD=true
+    else
+        die "$EX_SOFTWARE" "Une autre instance est en cours ($LOCK_DIR)"
+    fi
+}
+
+# ─── Mesures ──────────────────────────────────────────────────────────────
+get_cpu_usage() {
+    local u1 n1 s1 i1 w1 q1 sq1 st1 u2 n2 s2 i2 w2 q2 sq2 st2
+    read -r _ u1 n1 s1 i1 w1 q1 sq1 st1 _ < /proc/stat
+    sleep 1
+    read -r _ u2 n2 s2 i2 w2 q2 sq2 st2 _ < /proc/stat
+    local idle=$(( (i2 + w2) - (i1 + w1) ))
+    local total=$(( (u2+n2+s2+i2+w2+q2+sq2+st2) - (u1+n1+s1+i1+w1+q1+sq1+st1) ))
+    (( total > 0 )) || { echo 0; return 0; }
+    echo $(( 100 * (total - idle) / total ))
+}
+
+get_mem_usage() {
+    awk '/^MemTotal:/     { t = $2 }
+         /^MemAvailable:/ { a = $2 }
+         END { if (t > 0) printf "%d\n", (t - a) * 100 / t; else print 0 }' /proc/meminfo
+}
+
+# ─── Vérifications ────────────────────────────────────────────────────────
+evaluate() {
+    local label=$1 value=$2 threshold=$3
+    if (( value >= threshold )); then
+        log WARN "$label : ${value}% (seuil ${threshold}%) ALERTE"
+        ALERTS+=("${label// /_}=${value}%")
+    else
+        log INFO "$label : ${value}% (seuil ${threshold}%) OK"
+    fi
+}
+
+check_disks() {
+    local pct mount
+    while read -r pct mount; do
+        evaluate "Disque $mount" "$pct" "$DISK_THRESHOLD"
+    done < <(df -P -x tmpfs -x devtmpfs -x squashfs -x overlay \
+             | awk 'NR > 1 { gsub(/%/, "", $5); print $5, $6 }')
+}
+
+check_service() {
+    if systemctl is-active --quiet "$1"; then
+        log INFO "Service $1 : actif"
+    else
+        log WARN "Service $1 : INACTIF"
+        ALERTS+=("service:$1")
+    fi
+}
+
+report() {
+    if (( ${#ALERTS[@]} == 0 )); then
+        log INFO "Résultat : tout est OK"
+    else
+        log WARN "Résultat : ${#ALERTS[@]} alerte(s) : ${ALERTS[*]}"
+    fi
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────
+main() {
+    parse_args "$@"
+    check_dependencies
+    [[ -n $LOG_FILE ]] && touch "$LOG_FILE" 2>/dev/null \
+        || [[ -z $LOG_FILE ]] || die "$EX_USAGE" "Fichier de log non inscriptible : $LOG_FILE"
+    acquire_lock
+
+    log INFO "Démarrage de la surveillance sur $(hostname)"
+
+    local cpu mem svc
+    cpu=$(get_cpu_usage)
+    mem=$(get_mem_usage)
+
+    evaluate "CPU"     "$cpu" "$CPU_THRESHOLD"
+    evaluate "Mémoire" "$mem" "$MEM_THRESHOLD"
+    check_disks
+
+    for svc in "${SERVICES[@]}"; do
+        check_service "$svc"
+    done
+
+    report
+    (( ${#ALERTS[@]} == 0 )) || exit "$EX_ALERT"
+    exit "$EX_OK"
+}
+
+main "$@"
+```
+
+---
+
+### Installation et tests
+
+```bash
+sudo install -m 755 monitor.sh /usr/local/bin/monitor.sh
+shellcheck monitor.sh                              # analyse statique
+bash -n monitor.sh                                 # vérification syntaxe
+```
+
+**Test 1 — exécution normale :**
+
+```bash
+monitor.sh -s ssh -s nginx
+# 2026-10-06 14:02:11 [INFO] Démarrage de la surveillance sur ns1
+# 2026-10-06 14:02:12 [INFO] CPU : 7% (seuil 80%) OK
+# 2026-10-06 14:02:12 [WARN] Service nginx : INACTIF
+echo $?     # 1
+```
+
+**Test 2 — forcer une alerte :**
+
+```bash
+monitor.sh --disk 10 --mem 5
+echo "code : $?"   # 1
+```
+
+**Test 3 — erreurs d'usage :**
+
+```bash
+monitor.sh --cpu abc       # [ERROR] Seuil CPU invalide → code 2
+monitor.sh --cpu           # [ERROR] L'option --cpu attend une valeur → code 2
+monitor.sh -s 'ssh; rm -rf /'   # [ERROR] Nom de service invalide → code 2
+```
+
+**Test 4 — séparation stdout/stderr :**
+
+```bash
+monitor.sh -q --cpu 999 2>erreurs.txt >sortie.txt
+cat erreurs.txt    # message d'erreur
+cat sortie.txt     # vide
+```
+
+**Test 5 — verrou anti double exécution :**
+
+```bash
+monitor.sh & monitor.sh
+# [ERROR] Une autre instance est en cours → code 3
+```
+
+---
+
+### Ce que la v2 apporte par rapport à S1
+
+| S1 | v2 |
+|---|---|
+| Affichage brut | Décision basée sur des seuils |
+| Aucun code de sortie | `0 / 1 / 2 / 3` exploitable par cron |
+| Valeurs codées en dur | Options courtes et longues validées |
+| Bloc monolithique | Fonctions réutilisables |
+| Échec silencieux | `set -Eeuo pipefail` + `trap` |
+| Messages mélangés | Erreurs sur stderr, résultats sur stdout |
+| Pas de trace | Log avec horodatage |
+| Exécutions concurrentes | Verrou nettoyé par `trap EXIT` |
+
+---
+
+### Exploitation avec cron
+
+```bash
+# crontab -e
+*/5 * * * * /usr/local/bin/monitor.sh -q -l /var/log/monitor.log -s ssh -s nginx
+```
+
+---
+
+## Commandes clés apprises
+
+```bash
+# Fonctions
+local var                           # variable locale
+die()  { echo "ERREUR : $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || die "..."; }
+
+# Variables spéciales
+echo "$@" "$#" "$?" "$$" "${PIPESTATUS[@]}"
+
+# Modes stricts
+set -Eeuo pipefail
+
+# Traps
+trap 'cleanup' EXIT
+trap 'echo "Err ligne $LINENO : $BASH_COMMAND" >&2' ERR
+trap 'exit 130' INT TERM
+
+# Arguments
+while (( $# > 0 )); do case $1 in -v) ...; shift ;; esac; done
+getopts ":vo:h" opt
+
+# Heredoc
+cat <<EOF ... EOF
+cat <<'EOF' ... EOF              # littéral
+sudo tee /etc/fichier >/dev/null <<'EOF' ... EOF
+read -r ip mask <<< "192.168.1.1 255.255.255.0"
+
+# Arrays
+declare -A assoc=( [cle]=val )
+mapfile -t arr < fichier
+"${arr[@]}" "${!arr[@]}" "${#arr[@]}"
+
+# Boucles
+while IFS= read -r ligne; do ... done < fichier
+while read -r l; do ... done < <(commande)
+
+# Regex
+[[ $var =~ ^regex$ ]]
+echo "${BASH_REMATCH[0]}" "${BASH_REMATCH[1]}"
+
+# Debug
+shellcheck script.sh
+bash -n script.sh
+bash -x script.sh
+```
+
+---
+
+## Livrables & preuves
+
+- [ ] Script `monitor.sh` v2 dans `/usr/local/bin/` avec `chmod 755`
+- [ ] Capture de `shellcheck monitor.sh` — aucune erreur
+- [ ] Capture de `monitor.sh -s ssh -s nginx` avec code de sortie `0` ou `1`
+- [ ] Capture de `monitor.sh --cpu abc` → code de sortie `2` et message sur stderr
+- [ ] Capture du verrou anti double exécution → code `3`
+- [ ] Capture de `monitor.sh --disk 10` → alerte déclenchée
+
+---
+
+## Difficultés rencontrées & solutions
+
+| Difficulté rencontrée | Solution appliquée |
+|---|---|
+| `local x=$(commande)` masque l'échec | Déclarer `local x` puis `x=$(commande)` sur deux lignes séparées |
+| `(( i++ ))` avec `i=0` arrête le script sous `set -e` | Utiliser `i=$(( i + 1 ))` à la place |
+| Variables d'un `while` dans un pipeline perdues | Utiliser la substitution de processus `< <(commande)` |
+| `trap ERR` ne se déclenche pas dans une fonction | Ajouter `-E` au `set` : `set -Eeuo pipefail` |
+| Heredoc avec `sudo` ne fonctionne pas | Utiliser `sudo tee fichier >/dev/null <<'EOF'` |
+| Tableau vide provoque une erreur avec `set -u` | Vérifier `(( ${#SERVICES[@]} == 0 ))` avant de parcourir |
+
+---
+
+*Semaine 09 terminée · Prochaine étape → [Semaine 10 — Docker & conteneurisation](../10-docker/README.md)*

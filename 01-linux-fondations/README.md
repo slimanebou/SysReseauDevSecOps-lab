@@ -6914,3 +6914,994 @@ bash -x script.sh
 ---
 
 *Semaine 09 terminée · Prochaine étape → [Semaine 10 — Docker & conteneurisation](../10-docker/README.md)*
+
+# Semaine 10 — Sécurité Linux : hardening
+
+> **Phase 3 — Virtualisation & Services**
+> Rythme : 3 soirs × 45 min · Statut : ✅ Terminé
+
+---
+
+## Objectif de la semaine
+
+Appliquer les mesures de hardening fondamentales sur un serveur Ubuntu : auditd pour tracer les accès, ClamAV pour la détection de malwares, unattended-upgrades pour les correctifs automatiques, désactivation des services inutiles et analyse des binaires SUID/SGID. Documenter chaque étape dans un `SECURITY_CHECKLIST.md` avec preuves mesurables (Lynis avant/après).
+
+---
+
+## Sommaire
+
+- [1. Principes du hardening](#1-principes-du-hardening)
+- [2. Auditd — tracer les accès](#2-auditd--tracer-les-accès)
+- [3. ClamAV — antivirus](#3-clamav--antivirus)
+- [4. unattended-upgrades](#4-unattended-upgrades)
+- [5. Désactiver les services inutiles](#5-désactiver-les-services-inutiles)
+- [6. SUID / SGID](#6-suid--sgid)
+- [7. Exercice — Hardening complet + SECURITY\_CHECKLIST.md](#7-exercice--hardening-complet--security_checklistmd)
+- [8. Dépannage](#8-dépannage)
+- [Commandes clés apprises](#commandes-clés-apprises)
+- [Livrables & preuves](#livrables--preuves)
+- [Difficultés rencontrées & solutions](#difficultés-rencontrées--solutions)
+
+---
+
+## 1. Principes du hardening
+
+| Principe | Application |
+|---|---|
+| Réduire la surface d'attaque | Désactiver les services inutiles, limiter les SUID, fermer les ports |
+| Moindre privilège | Peu de binaires SUID, `sudo` plutôt que root, `nosuid` sur les montages |
+| Corriger vite | Mises à jour de sécurité automatiques |
+| Détecter | auditd (qui a modifié quoi), ClamAV (fichiers malveillants), logs |
+| Documenter et vérifier | `SECURITY_CHECKLIST.md`, audit Lynis avant/après |
+
+**Référentiels :**
+- **CIS Benchmark Ubuntu** : contrôles numérotés, Level 1 (bon compromis) et Level 2 (plus strict). Ne pas appliquer aveuglément — chaque règle doit être comprise.
+- **Lynis** : outil d'audit qui évalue la machine et donne un score. Il n'applique rien.
+
+> Le hardening réduit la surface d'attaque, il ne rend pas une machine "sûre". C'est de la **défense en profondeur**.
+
+---
+
+## 2. Auditd — tracer les accès
+
+### Rôle
+
+`auditd` est le démon d'audit du noyau Linux. Il enregistre des événements précis (appel système, fichier touché, utilisateur, programme) dans `/var/log/audit/audit.log`.
+
+**Différence avec `/var/log/auth.log`** : l'audit voit tout ce qui touche un fichier, même si le programme ne logue rien.
+
+**Concept clé — `auid` :** l'identité de connexion d'origine, **conservée après `sudo` ou `su`**. Si `admin` fait `sudo vim /etc/passwd`, `uid=root` mais `auid=admin` : on sait qui est réellement derrière.
+
+---
+
+### Installation
+
+```bash
+sudo apt install auditd audispd-plugins -y
+sudo systemctl enable --now auditd
+sudo auditctl -s          # état : enabled 1, lost 0
+```
+
+---
+
+### Fichiers de configuration
+
+| Fichier | Rôle |
+|---|---|
+| `/etc/audit/auditd.conf` | Configuration du démon (taille et rotation des logs) |
+| `/etc/audit/rules.d/*.rules` | Tes règles (fragments) |
+| `/etc/audit/audit.rules` | Fichier généré par `augenrules` — ne pas éditer |
+| `/var/log/audit/audit.log` | Journal d'audit |
+
+---
+
+### Syntaxe des règles
+
+**Surveillance de fichier (watch) :**
+
+```
+-w CHEMIN -p PERMISSIONS -k CLÉ
+```
+
+| Permission | Déclenche sur |
+|---|---|
+| `r` | Lecture |
+| `w` | Écriture |
+| `x` | Exécution |
+| `a` | Changement d'attributs (chmod, chown) |
+
+> `-p wa` (écriture + attributs) est le choix usuel pour les fichiers de configuration.
+> La clé `-k` permet de retrouver les événements avec `ausearch -k`.
+
+**Surveillance d'appel système :**
+
+```bash
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+```
+
+---
+
+### Fichier de règles
+
+```bash
+sudo nano /etc/audit/rules.d/50-hardening.rules
+```
+
+```
+## Identité et authentification
+-w /etc/passwd   -p wa -k identity
+-w /etc/shadow   -p wa -k identity
+-w /etc/group    -p wa -k identity
+-w /etc/gshadow  -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+## Élévation de privilèges
+-w /etc/sudoers    -p wa -k sudoers
+-w /etc/sudoers.d/ -p wa -k sudoers
+
+## Accès distant
+-w /etc/ssh/sshd_config    -p wa -k sshd_config
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+
+## Planification de tâches
+-w /etc/crontab      -p wa -k cron
+-w /etc/cron.d/      -p wa -k cron
+-w /var/spool/cron/  -p wa -k cron
+
+## Pare-feu
+-w /etc/ufw/ -p wa -k firewall
+
+## Modules noyau et changement d'heure
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+```
+
+---
+
+### Charger et vérifier
+
+```bash
+sudo augenrules --check          # dit si les règles ont changé
+sudo augenrules --load           # fusionne rules.d/ → audit.rules et charge
+sudo auditctl -l                 # liste les règles actives
+```
+
+---
+
+### Rendre les règles immuables (optionnel)
+
+```bash
+echo "-e 2" | sudo tee /etc/audit/rules.d/99-finalize.rules
+```
+
+> Avec `-e 2`, les règles ne peuvent plus être modifiées avant un redémarrage, même par root.
+> **En phase de mise au point, ne pas activer** — chaque modification impose un reboot.
+
+---
+
+### Lire les événements
+
+```bash
+sudo ausearch -k identity -ts recent -i        # -i = noms lisibles, -ts = 10 dernières min
+sudo ausearch -f /etc/shadow -i               # tout ce qui touche shadow
+sudo ausearch -k sudoers --start today -i
+sudo aureport --summary                        # synthèse globale
+sudo aureport -k --summary                    # événements par clé
+sudo aureport -au --failed                    # échecs d'authentification
+sudo aureport -x --summary                    # exécutables les plus actifs
+sudo tail -f /var/log/audit/audit.log         # brut, en direct
+```
+
+**Lire un événement :**
+
+```
+type=SYSCALL  auid=admin  uid=root  exe=/usr/sbin/useradd  key=identity
+                │              │          │                      │
+                │              │          │                      └─ clé de la règle déclenchée
+                │              │          └─ binaire responsable
+                │              └─ uid sous lequel tourne le processus (root après sudo)
+                └─ identité de connexion RÉELLE (celui qui a fait sudo)
+```
+
+---
+
+### Rotation des logs
+
+Dans `/etc/audit/auditd.conf` :
+
+```
+max_log_file = 20              # Mo par fichier
+num_logs = 10                  # fichiers conservés
+max_log_file_action = ROTATE
+```
+
+---
+
+## 3. ClamAV — antivirus
+
+### Les composants
+
+| Composant | Rôle |
+|---|---|
+| `clamscan` | Scanner CLI — charge toute la base à chaque lancement (lent, autonome) |
+| `clamd` | Démon qui garde la base en mémoire — interrogé via `clamdscan` (rapide, ~1 Go RAM) |
+| `freshclam` | Mise à jour des signatures (vérifie plusieurs fois par jour) |
+
+---
+
+### Installation
+
+```bash
+sudo apt install clamav -y
+
+sudo systemctl stop clamav-freshclam
+sudo freshclam                               # mise à jour manuelle
+sudo systemctl start clamav-freshclam
+```
+
+> Si tu lances `freshclam` pendant que le service tourne : `log file is locked`. Stopper le service d'abord.
+
+---
+
+### Test EICAR
+
+```bash
+printf '%s\n' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.txt
+clamscan /tmp/eicar.txt
+# /tmp/eicar.txt: Win.Test.EICAR_HDB-1 FOUND
+rm /tmp/eicar.txt
+```
+
+> Le fichier EICAR est une chaîne de test inoffensive, reconnue par tous les antivirus.
+
+---
+
+### Scanner le système
+
+```bash
+sudo clamscan -r -i \
+    --exclude-dir='^/proc' --exclude-dir='^/sys' --exclude-dir='^/dev' \
+    --exclude-dir='^/run'  --exclude-dir='^/var/lib/clamav' \
+    --log=/var/log/clamav/scan-manuel.log /
+```
+
+| Option | Effet |
+|---|---|
+| `-r` | Récursif |
+| `-i` | N'affiche que les fichiers infectés |
+| `--exclude-dir='^/proc'` | Exclut par regex (pseudo-fichiers : inutile et lent) |
+| `--log=FICHIER` | Écrit un journal |
+
+**Codes de sortie :** `0` = rien trouvé · `1` = virus trouvé · `2` = erreur
+
+> ⚠️ Ne jamais utiliser `--remove` en automatique. Un faux positif supprimerait un fichier légitime.
+
+---
+
+### Script de scan hebdomadaire
+
+```bash
+sudo nano /usr/local/bin/clamav-weekly-scan
+```
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+LOG=/var/log/clamav/weekly-scan.log
+status=0
+{
+    echo "===== Début du scan : $(date '+%F %T') sur $(hostname) ====="
+    nice -n 19 ionice -c3 clamscan -r -i \
+        --exclude-dir='^/proc' --exclude-dir='^/sys' --exclude-dir='^/dev' \
+        --exclude-dir='^/run'  --exclude-dir='^/var/lib/clamav' \
+        / || status=$?
+    echo "===== Fin du scan : $(date '+%F %T') (code $status) ====="
+} >> "$LOG" 2>&1
+
+case $status in
+    0) logger -t clamav-weekly "Scan terminé : aucune menace" ;;
+    1) logger -t clamav-weekly -p auth.alert "MENACE DÉTECTÉE : voir $LOG" ;;
+    *) logger -t clamav-weekly -p daemon.err "Erreur de scan (code $status) : voir $LOG" ;;
+esac
+exit "$status"
+```
+
+```bash
+sudo chmod 750 /usr/local/bin/clamav-weekly-scan
+```
+
+> `nice -n 19 ionice -c3` donnent au scan la priorité CPU et disque la plus basse — ne ralentit pas la machine.
+
+---
+
+### Cron hebdomadaire
+
+```bash
+sudo nano /etc/cron.d/clamav-weekly
+```
+
+```
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Dimanche 03h00
+0 3 * * 0 root /usr/local/bin/clamav-weekly-scan
+```
+
+```bash
+sudo chmod 644 /etc/cron.d/clamav-weekly
+sudo chown root:root /etc/cron.d/clamav-weekly
+```
+
+**Pièges cron sur Debian/Ubuntu :**
+
+| Piège | Explication |
+|---|---|
+| Champ utilisateur | Dans `/etc/cron.d/`, il y a un champ `root` en plus des 5 champs horaires |
+| Nom avec un point | `clamav.weekly` est ignoré silencieusement — utiliser `clamav-weekly` |
+| Pas de retour à la ligne finale | Le fichier doit se terminer par `\n` |
+
+---
+
+### Limites de ClamAV
+
+ClamAV détecte surtout des signatures connues, en grande partie de malwares Windows. Sur un serveur Linux, son intérêt est de scanner les fichiers entrants (uploads web, partages Samba) et de repérer certains webshells.
+
+---
+
+## 4. unattended-upgrades
+
+### Principe
+
+La majorité des compromissions exploitent des failles **corrigées depuis des semaines**. Appliquer automatiquement les correctifs de sécurité réduit fortement ce risque.
+
+---
+
+### Installation
+
+```bash
+sudo apt install unattended-upgrades apt-listchanges -y
+sudo dpkg-reconfigure -plow unattended-upgrades    # répondre « Oui »
+```
+
+Cela crée `/etc/apt/apt.conf.d/20auto-upgrades` :
+
+```
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+```
+
+---
+
+### Configuration
+
+```bash
+sudo nano /etc/apt/apt.conf.d/52unattended-upgrades-local
+```
+
+```
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+// Unattended-Upgrade::Automatic-Reboot-Time "03:30";
+```
+
+> Un correctif de noyau n'est actif **qu'après reboot**. Le fichier `/var/run/reboot-required` signale ce besoin.
+
+---
+
+### Vérifier
+
+```bash
+sudo unattended-upgrade --dry-run --debug         # simulation complète
+systemctl list-timers 'apt-daily*' --no-pager     # minuteurs systemd
+apt-config dump | grep -E 'Periodic|Unattended-Upgrade::(Allowed|Automatic)'
+sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
+ls /var/run/reboot-required 2>/dev/null && cat /var/run/reboot-required.pkgs
+```
+
+---
+
+## 5. Désactiver les services inutiles
+
+Un service qui ne tourne pas **ne peut pas être exploité**.
+
+### Inventaire
+
+```bash
+systemctl list-unit-files --type=service --state=enabled --no-pager   # lancés au boot
+systemctl list-units --type=service --state=running --no-pager        # actifs maintenant
+systemctl list-units --type=socket --state=listening --no-pager       # sockets d'activation
+sudo ss -tulpn                                                         # ports ouverts
+systemd-analyze security --no-pager                                   # score d'exposition
+```
+
+---
+
+### `stop` vs `disable` vs `mask`
+
+| Commande | Arrêt immédiat | Pas de boot | Manuel possible | Via dépendance |
+|---|---|---|---|---|
+| `systemctl stop X` | ✅ | ❌ | ✅ | ✅ |
+| `systemctl disable X` | ❌ | ✅ | ✅ | ✅ |
+| `systemctl disable --now X` | ✅ | ✅ | ✅ | ✅ |
+| `systemctl mask X` | ❌ | ✅ | ❌ | ❌ |
+
+> `mask` lie l'unité à `/dev/null` : **rien ne peut la lancer**. Pour annuler : `systemctl unmask X`.
+
+```bash
+sudo systemctl disable --now bluetooth.service
+sudo systemctl mask bluetooth.service
+systemctl is-enabled bluetooth.service        # masked
+```
+
+---
+
+### Piège de l'activation par socket
+
+Beaucoup de services ont une unité `.socket` qui les relance à la première connexion. Si tu ne désactives que le `.service`, il revient.
+
+```bash
+sudo systemctl disable --now cups.service cups.socket cups.path
+```
+
+> Ne jamais masquer `ssh.service` / `ssh.socket` sur la machine à laquelle tu es connecté.
+
+---
+
+### Services à évaluer
+
+| Service | Rôle | Décision sur un serveur |
+|---|---|---|
+| `avahi-daemon` | Découverte réseau mDNS | Désactiver / désinstaller |
+| `cups`, `cups-browsed` | Impression | Désactiver / désinstaller |
+| `bluetooth` | Bluetooth | Désactiver |
+| `ModemManager` | Modems 3G/4G | Désactiver |
+| `multipathd` | Multipath SAN | Désactiver sur VM sans SAN |
+| `apport` | Rapports de plantage | Désactiver |
+| `ssh`, `cron`, `rsyslog`, `ufw`, `auditd` | Essentiels | **Garder** |
+
+> Le mieux est de **désinstaller** : un paquet absent n'a ni démon, ni mise à jour à suivre.
+
+```bash
+sudo apt purge avahi-daemon cups-browsed -y
+sudo apt autoremove --purge -y
+```
+
+---
+
+## 6. SUID / SGID
+
+### Rappel des bits spéciaux
+
+| Bit | Octal | Effet | Affichage |
+|---|---|---|---|
+| SUID | 4000 | S'exécute avec les droits du **propriétaire** (souvent root) | `-rw**s**r-xr-x` |
+| SGID | 2000 | S'exécute avec les droits du **groupe** | `-rwxr-**s**r-x` |
+| Sticky | 1000 | Sur un répertoire : seul le propriétaire peut supprimer son fichier (`/tmp`) | `drwxrwxrw**t**` |
+
+**Exemple légitime :** `/usr/bin/passwd` est SUID root pour modifier `/etc/shadow`.
+
+**Le risque :** un binaire SUID root avec une faille permet une escalade de privilèges.
+
+---
+
+### Commandes de recherche
+
+```bash
+find / -perm /4000 -ls 2>/dev/null              # SUID
+find / -perm /2000 -ls 2>/dev/null              # SGID
+find / -xdev -type f -perm /6000 -ls 2>/dev/null   # les deux, fichiers seulement
+```
+
+**Syntaxe de `-perm` :**
+
+| Forme | Signification |
+|---|---|
+| `-perm 4000` | Permissions exactement 4000 |
+| `-perm -4000` | Tous les bits indiqués sont positionnés |
+| `-perm /4000` | Au moins un des bits indiqués |
+| `-perm +4000` | Ancienne syntaxe — **supprimée des `find` récents** |
+
+---
+
+### Ce qui est normal sur Ubuntu
+
+**SUID normaux :** `su`, `sudo`, `passwd`, `chsh`, `chfn`, `gpasswd`, `newgrp`, `mount`, `umount`, `pkexec`, `fusermount3`, `ssh-keysign`
+
+**Ce qui est suspect :**
+
+| Indice | Explication |
+|---|---|
+| SUID dans `/tmp`, `/var/tmp`, `/dev/shm`, `/home` | Aucun SUID ne devrait être là |
+| SUID sur un interpréteur (`bash`, `python`, `vim`, `find`...) | GTFOBins : escalade de privilèges possible |
+| Binaire inconnu de dpkg | Hors paquet = suspect |
+| SUID récemment modifié | Vérifier avec `-mtime -7` |
+
+```bash
+# Référentiel GTFOBins pour la défense
+# https://gtfobins.github.io
+```
+
+---
+
+### Recherches ciblées
+
+```bash
+# Emplacements suspects
+sudo find /tmp /var/tmp /dev/shm /home -type f -perm /6000 -ls 2>/dev/null
+
+# Récemment modifiés (7 derniers jours)
+sudo find / -xdev -type f -perm /6000 -mtime -7 -ls 2>/dev/null
+
+# Appartenance à un paquet
+dpkg -S /usr/bin/passwd
+
+# Intégrité des binaires
+sudo apt install debsums -y && sudo debsums -s
+
+# Capabilities (autre mécanisme de privilèges)
+getcap -r / 2>/dev/null
+```
+
+---
+
+### Créer une référence et comparer
+
+```bash
+# Créer la référence
+sudo find / -xdev -type f -perm /6000 2>/dev/null | sort | sudo tee /root/suid_baseline.txt
+
+# Plus tard : détecter les changements
+sudo find / -xdev -type f -perm /6000 2>/dev/null | sort | diff /root/suid_baseline.txt -
+# > /tmp/suid-test    ← un nouveau SUID est apparu : à investiguer
+```
+
+---
+
+### Réduire les SUID
+
+```bash
+sudo chmod u-s /usr/bin/chfn
+sudo dpkg-statoverride --update --add root root 0755 /usr/bin/chfn
+```
+
+> Sans `dpkg-statoverride`, la prochaine mise à jour du paquet **rétablit le bit SUID**.
+> Ne jamais retirer le SUID de `su`, `sudo`, `passwd`, `mount`.
+
+**Option `nosuid` sur les montages (`/etc/fstab`) :**
+
+```
+tmpfs  /dev/shm  tmpfs  defaults,nosuid,nodev,noexec  0 0
+```
+
+---
+
+## 7. Exercice — Hardening complet + SECURITY_CHECKLIST.md
+
+### Plan d'hypothèses
+
+Ubuntu Server 22.04/24.04, utilisateur `admin` dans le groupe `sudo`, SSH sur port 2222, UFW actif, nginx et MariaDB installés.
+
+---
+
+### Étape 0 — État initial (la preuve « avant »)
+
+```bash
+# Snapshot VMware AVANT de commencer !
+
+mkdir -p ~/hardening && cd ~/hardening
+sudo apt update && sudo apt upgrade -y
+
+# Audit initial
+sudo apt install lynis -y
+sudo lynis audit system --quick > lynis_avant.txt 2>&1
+sudo grep hardening_index /var/log/lynis-report.dat    # ex. hardening_index=61
+
+# Références
+sudo ss -tulpn > ports_avant.txt
+systemctl list-unit-files --type=service --state=enabled --no-pager > services_avant.txt
+sudo find / -xdev -type f -perm /6000 2>/dev/null | sort | sudo tee /root/suid_baseline.txt > suid_avant.txt
+```
+
+---
+
+### Étape 1 — auditd
+
+```bash
+sudo apt install auditd audispd-plugins -y
+sudo systemctl enable --now auditd
+
+sudo tee /etc/audit/rules.d/50-hardening.rules >/dev/null <<'EOF'
+-w /etc/passwd   -p wa -k identity
+-w /etc/shadow   -p wa -k identity
+-w /etc/group    -p wa -k identity
+-w /etc/gshadow  -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+-w /etc/sudoers    -p wa -k sudoers
+-w /etc/sudoers.d/ -p wa -k sudoers
+-w /etc/ssh/sshd_config    -p wa -k sshd_config
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+-w /etc/crontab     -p wa -k cron
+-w /etc/cron.d/     -p wa -k cron
+-w /var/spool/cron/ -p wa -k cron
+-w /etc/ufw/ -p wa -k firewall
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+EOF
+
+sudo augenrules --load
+sudo auditctl -l | grep -c .          # nombre de règles chargées
+sudo auditctl -s | grep -E 'enabled|lost'
+```
+
+**Test :**
+
+```bash
+sudo useradd -m testaudit
+sudo ausearch -k identity -ts recent -i | grep -E 'name=|exe=|auid='
+sudo userdel -r testaudit
+sudo aureport -k --summary
+```
+
+---
+
+### Étape 2 — unattended-upgrades
+
+```bash
+sudo apt install unattended-upgrades apt-listchanges -y
+echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | sudo debconf-set-selections
+sudo dpkg-reconfigure -f noninteractive unattended-upgrades
+
+sudo tee /etc/apt/apt.conf.d/52unattended-upgrades-local >/dev/null <<'EOF'
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+
+cat /etc/apt/apt.conf.d/20auto-upgrades
+sudo unattended-upgrade --dry-run --debug 2>&1 | grep -E 'Allowed origins|No packages|Packages that will'
+systemctl list-timers 'apt-daily*' --no-pager
+```
+
+---
+
+### Étape 3 — ClamAV et cron
+
+```bash
+sudo apt install clamav -y
+sudo systemctl stop clamav-freshclam
+sudo freshclam
+sudo systemctl enable --now clamav-freshclam
+
+sudo tee /usr/local/bin/clamav-weekly-scan >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+LOG=/var/log/clamav/weekly-scan.log
+status=0
+{
+    echo "===== Début du scan : $(date '+%F %T') sur $(hostname) ====="
+    nice -n 19 ionice -c3 clamscan -r -i \
+        --exclude-dir='^/proc' --exclude-dir='^/sys' --exclude-dir='^/dev' \
+        --exclude-dir='^/run'  --exclude-dir='^/var/lib/clamav' \
+        / || status=$?
+    echo "===== Fin du scan : $(date '+%F %T') (code $status) ====="
+} >> "$LOG" 2>&1
+case $status in
+    0) logger -t clamav-weekly "Scan terminé : aucune menace" ;;
+    1) logger -t clamav-weekly -p auth.alert "MENACE DÉTECTÉE : voir $LOG" ;;
+    *) logger -t clamav-weekly -p daemon.err "Erreur de scan (code $status) : voir $LOG" ;;
+esac
+exit "$status"
+EOF
+sudo chmod 750 /usr/local/bin/clamav-weekly-scan
+
+sudo tee /etc/cron.d/clamav-weekly >/dev/null <<'EOF'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 * * 0 root /usr/local/bin/clamav-weekly-scan
+EOF
+sudo chmod 644 /etc/cron.d/clamav-weekly
+```
+
+**Tests :**
+
+```bash
+printf '%s\n' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | sudo tee /root/eicar.txt >/dev/null
+sudo clamscan -i /root/eicar.txt          # ... FOUND
+sudo rm /root/eicar.txt
+
+sudo /usr/local/bin/clamav-weekly-scan; echo "code : $?"
+sudo tail -n 15 /var/log/clamav/weekly-scan.log
+journalctl -t clamav-weekly --since today --no-pager
+```
+
+---
+
+### Étape 4 — Services inutiles
+
+```bash
+systemctl list-units --type=service --state=running --no-pager
+systemctl list-units --type=socket --state=listening --no-pager
+
+for svc in bluetooth ModemManager multipathd apport; do
+    if systemctl list-unit-files "${svc}.service" --no-legend 2>/dev/null | grep -q .; then
+        sudo systemctl disable --now "${svc}.service" 2>/dev/null
+        sudo systemctl mask "${svc}.service"
+        echo "$svc : $(systemctl is-enabled ${svc}.service 2>&1)"
+    fi
+done
+
+for u in cups.socket cups.path cups-browsed.service avahi-daemon.socket avahi-daemon.service; do
+    systemctl list-unit-files "$u" --no-legend 2>/dev/null | grep -q . \
+        && sudo systemctl disable --now "$u" && sudo systemctl mask "$u"
+done
+
+sudo apt purge avahi-daemon cups-browsed -y 2>/dev/null
+sudo apt autoremove --purge -y
+```
+
+**Vérifications :**
+
+```bash
+systemctl is-enabled bluetooth.service ModemManager.service 2>&1    # masked
+systemctl --failed --no-pager                                       # 0 unité en échec
+sudo ss -tulpn > ports_apres.txt
+diff ports_avant.txt ports_apres.txt
+```
+
+> Contrôle indispensable : SSH (2222), nginx et MariaDB répondent encore.
+
+---
+
+### Étape 5 — SUID/SGID
+
+```bash
+# Liste complète
+find / -perm /4000 -ls 2>/dev/null
+
+# Fichiers seulement, un seul disque, triés
+sudo find / -xdev -type f -perm /6000 2>/dev/null | sort > suid_apres.txt
+wc -l suid_apres.txt
+
+# Emplacements suspects (résultat attendu : vide)
+sudo find /tmp /var/tmp /dev/shm /home -type f -perm /6000 -ls 2>/dev/null
+
+# Récemment modifiés (résultat attendu : vide hors MAJ récente)
+sudo find / -xdev -type f -perm /6000 -mtime -7 -ls 2>/dev/null
+
+# Binaires hors paquet (résultat attendu : vide)
+while read -r f; do dpkg -S "$f" >/dev/null 2>&1 || echo "HORS PAQUET : $f"; done < suid_apres.txt
+
+# Intégrité
+sudo apt install debsums -y && sudo debsums -s
+```
+
+**Test de détection avec un faux SUID :**
+
+```bash
+sudo cp /usr/bin/id /tmp/suid-test && sudo chmod u+s /tmp/suid-test
+sudo find / -xdev -type f -perm /6000 2>/dev/null | sort | diff /root/suid_baseline.txt -
+# > /tmp/suid-test    ← détecté
+sudo find /tmp -type f -perm /6000 -ls
+sudo rm /tmp/suid-test
+```
+
+---
+
+### Étape 6 — Audit Lynis « après »
+
+```bash
+sudo lynis audit system --quick > lynis_apres.txt 2>&1
+sudo grep hardening_index /var/log/lynis-report.dat    # ex. hardening_index=72
+sudo grep -E '^(warning|suggestion)' /var/log/lynis-report.dat | head -20
+```
+
+---
+
+### Étape 7 — SECURITY_CHECKLIST.md
+
+```bash
+nano ~/hardening/SECURITY_CHECKLIST.md
+```
+
+```markdown
+# SECURITY_CHECKLIST : Hardening Ubuntu Server
+
+| | |
+|---|---|
+| **Machine** | ns1 (Ubuntu Server 24.04) |
+| **Date** | 2026-10-06 |
+| **Responsable** | admin |
+| **Référentiels** | CIS Benchmark Ubuntu (Level 1, partiel), Lynis |
+| **Score Lynis** | avant : 61 → après : 72 |
+
+## 1. Préparation
+- [x] Snapshot VMware avant modification
+- [x] Système à jour (`apt update && apt upgrade`)
+- [x] Audit initial Lynis, liste des ports, services et SUID sauvegardés
+- [x] Session SSH de secours ouverte pendant les changements
+
+## 2. Audit système (auditd)
+- [x] `auditd` installé, service actif au boot
+- [x] Règles dans `/etc/audit/rules.d/50-hardening.rules` : passwd, shadow, sudoers, sshd_config, cron, ufw, modules, time
+- [x] **Test** : `useradd testaudit` → événement `key=identity` visible via `ausearch -k identity -i`
+- [ ] Règles immuables (`-e 2`) : non activé (phase de mise au point)
+
+## 3. Antivirus (ClamAV)
+- [x] `clamav` installé, `clamav-freshclam` actif
+- [x] Script `/usr/local/bin/clamav-weekly-scan` (journal : `/var/log/clamav/weekly-scan.log`)
+- [x] Cron `/etc/cron.d/clamav-weekly` : dimanche 03h00
+- [x] **Test** : fichier EICAR détecté, scan complet terminé avec code 0
+
+## 4. Mises à jour automatiques
+- [x] `unattended-upgrades` activé (`20auto-upgrades` valeurs à 1)
+- [x] Origines : `-security` uniquement
+- [x] Redémarrage automatique : désactivé
+- [x] **Test** : `--dry-run --debug` OK, minuteurs `apt-daily*` actifs
+
+## 5. Services
+- [x] Inventaire avant/après sauvegardé
+- [x] Désactivés + masqués : bluetooth, ModemManager, multipathd, apport
+- [x] Désinstallés : avahi-daemon, cups-browsed
+- [x] **Contrôle** : `systemctl --failed` vide, SSH/nginx/MariaDB fonctionnels
+
+## 6. SUID / SGID
+- [x] Référence créée : `/root/suid_baseline.txt`
+- [x] Aucun SUID dans `/tmp`, `/var/tmp`, `/dev/shm`, `/home`
+- [x] Aucun binaire hors paquet, `debsums -s` OK
+- [x] **Test** : faux SUID dans `/tmp` détecté par comparaison, supprimé
+
+## 7. Mesures déjà en place (cours précédents)
+- [x] UFW : `deny incoming`, ports 2222/80/443 uniquement
+- [x] SSH sur port 2222
+- [x] fail2ban actif (cours 04)
+
+## 8. Vérification finale
+- [x] Score Lynis après hardening : 72
+- [x] Redémarrage de contrôle : tous les services actifs
+- [x] Ports conformes (`ss -tulpn`)
+
+## 9. Points restants / risques acceptés
+- [ ] SSH par clé uniquement (`PasswordAuthentication no`)
+- [ ] Politique de mots de passe (`libpam-pwquality`)
+- [ ] `nosuid,nodev,noexec` sur `/dev/shm` et `/tmp`
+- [ ] Logs d'audit vers machine distante
+- Risque accepté : reboot manuel après mise à jour du noyau
+
+## 10. Maintenance
+
+| Fréquence | Action |
+|---|---|
+| Quotidien | `unattended-upgrades` (automatique) |
+| Hebdomadaire | Scan ClamAV (cron), lire `weekly-scan.log` |
+| Hebdomadaire | `aureport --summary`, `aureport -au --failed` |
+| Mensuel | Comparaison SUID, `lynis audit system`, `/var/run/reboot-required` |
+| Après modification | Mettre à jour cette checklist |
+```
+
+---
+
+### Tableau de bord des résultats attendus
+
+| Contrôle | Commande | Résultat attendu |
+|---|---|---|
+| auditd actif | `systemctl is-active auditd` | `active` |
+| Règles chargées | `sudo auditctl -l \| grep -c identity` | ≥ 5 |
+| Événement détecté | `ausearch -k identity -ts recent` | trace de `useradd` |
+| Signatures à jour | `systemctl is-active clamav-freshclam` | `active` |
+| Cron en place | `ls -l /etc/cron.d/clamav-weekly` | `-rw-r--r-- root root` |
+| MAJ auto | `apt-config dump \| grep Unattended-Upgrade "1"` | `"1"` |
+| Services masqués | `systemctl is-enabled bluetooth` | `masked` |
+| Aucun échec | `systemctl --failed` | `0 loaded units listed` |
+| SUID inattendus | `find /tmp /var/tmp /dev/shm /home -perm /6000 -type f` | vide |
+| Score Lynis | `grep hardening_index /var/log/lynis-report.dat` | supérieur à l'initial |
+
+---
+
+## 8. Dépannage
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| `augenrules --load` : "No rules" | Faute de syntaxe dans un `.rules` | `sudo auditctl -R /etc/audit/rules.d/50-hardening.rules` pour voir la ligne |
+| "The audit system is in immutable mode" | `-e 2` actif | Redémarrer la machine |
+| `auditctl -s` : `lost` augmente | Règles trop bruyantes ou backlog trop petit | Augmenter `-b`, retirer les règles `execve` |
+| Disque plein dans `/var/log/audit` | Pas de rotation | Configurer `max_log_file`, `num_logs`, `ROTATE` |
+| `freshclam` : "log file is locked" | `clamav-freshclam` tourne déjà | Stopper le service, lancer `freshclam`, relancer |
+| Le cron ne se déclenche jamais | Nom avec un point, droits en écriture, pas de newline | Renommer, `chmod 644`, vérifier `journalctl -u cron` |
+| `unattended-upgrade` n'installe rien | Aucune MAJ de sécurité disponible, origine non autorisée | `--dry-run --debug`, lire `Allowed origins` |
+| Service désactivé qui redémarre | Le `.socket` ou `.path` est resté actif | `disable --now` sur le `.socket`, ou `mask` |
+| `Failed to enable unit: Unit is masked` | Tentative d'activer un service masqué | `systemctl unmask` d'abord |
+| Plus de SSH après nettoyage | `ssh.socket` ou `ssh` masqué | Console VMware → `systemctl unmask ssh && systemctl enable --now ssh` |
+| `unknown predicate -perm +4000` | Ancienne syntaxe supprimée | Utiliser `-perm /4000` |
+| SUID retiré revient après `apt upgrade` | Le paquet rétablit ses permissions | `dpkg-statoverride --update --add ...` |
+
+---
+
+## Commandes clés apprises
+
+```bash
+# auditd
+sudo apt install auditd audispd-plugins
+sudo systemctl enable --now auditd
+sudo augenrules --load
+sudo auditctl -l
+sudo auditctl -s
+sudo ausearch -k identity -ts recent -i
+sudo ausearch -f /etc/shadow -i
+sudo aureport --summary
+sudo aureport -k --summary
+sudo aureport -au --failed
+
+# ClamAV
+sudo apt install clamav
+sudo freshclam
+sudo clamscan -r -i --exclude-dir='^/proc' /
+sudo chmod 750 /usr/local/bin/clamav-weekly-scan
+
+# unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades
+sudo unattended-upgrade --dry-run --debug
+systemctl list-timers 'apt-daily*'
+cat /etc/apt/apt.conf.d/20auto-upgrades
+ls /var/run/reboot-required
+
+# Lynis
+sudo apt install lynis
+sudo lynis audit system --quick
+sudo grep hardening_index /var/log/lynis-report.dat
+
+# Services
+systemctl list-unit-files --type=service --state=enabled
+systemctl list-units --type=service --state=running
+systemd-analyze security
+sudo systemctl disable --now SERVICE
+sudo systemctl mask SERVICE
+systemctl is-enabled SERVICE
+
+# SUID/SGID
+find / -perm /4000 -ls 2>/dev/null
+find / -xdev -type f -perm /6000 2>/dev/null | sort
+find /tmp /var/tmp /dev/shm /home -type f -perm /6000 -ls 2>/dev/null
+dpkg -S /usr/bin/passwd
+sudo debsums -s
+getcap -r / 2>/dev/null
+sudo chmod u-s /usr/bin/chfn
+sudo dpkg-statoverride --update --add root root 0755 /usr/bin/chfn
+```
+
+---
+
+## Livrables & preuves
+
+- [ ] `lynis_avant.txt` et `lynis_apres.txt` — score amélioré
+- [ ] `suid_avant.txt` et `suid_apres.txt` — aucun SUID suspect
+- [ ] `ports_avant.txt` et `ports_apres.txt` — diff propre
+- [ ] `services_avant.txt` et `services_apres.txt` — services désactivés visibles
+- [ ] Capture de `ausearch -k identity -ts recent -i` après `useradd testaudit`
+- [ ] Capture de `clamscan` avec le fichier EICAR détecté
+- [ ] Capture de `systemctl is-enabled bluetooth` → `masked`
+- [ ] Capture de `systemctl --failed` → `0 loaded units listed`
+- [ ] `SECURITY_CHECKLIST.md` complété avec cases cochées sur GitHub
+
+---
+
+## Difficultés rencontrées & solutions
+
+| Difficulté rencontrée | Solution appliquée |
+|---|---|
+| `augenrules --load` silencieux — règles non chargées | Faute de syntaxe dans le `.rules` — `auditctl -R fichier` pour identifier la ligne |
+| `freshclam` échoue avec "log file is locked" | Stopper `clamav-freshclam` avant de lancer `freshclam` manuellement |
+| Cron ignoré silencieusement | Fichier nommé `clamav.weekly` avec un point — renommé en `clamav-weekly` |
+| Service masqué qui refuse `enable` | `systemctl unmask` avant `enable` |
+| SUID retiré revient après `apt upgrade` | `dpkg-statoverride` utilisé pour rendre la modification persistante |
+| `find -perm +4000` erreur | Ancienne syntaxe — remplacée par `-perm /4000` |
+
+---
+
+*Semaine 10 terminée · Prochaine étape → [Semaine 11 — Docker & conteneurisation](../11-docker/README.md)*

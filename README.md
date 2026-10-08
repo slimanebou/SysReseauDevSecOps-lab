@@ -1,107 +1,143 @@
 ﻿<div align="center">
 
 # 🖥️ SysReseauDevSecOps-lab
-### Lab personnel d'ingénierie Système & Réseau — Master 2 IRS
 
-[![Linux](https://img.shields.io/badge/Linux-Ubuntu_22.04-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/)
-[![Docker](https://img.shields.io/badge/Docker-Conteneurisation-2496ED?style=flat&logo=docker&logoColor=white)](https://docker.com/)
-[![Ansible](https://img.shields.io/badge/Ansible-Automatisation-EE0000?style=flat&logo=ansible&logoColor=white)](https://ansible.com/)
+### Systèmes • Réseaux • Cybersécurité • DevOps • Cloud
+
+
+[![Debian](https://img.shields.io/badge/Debian-Linux-A81D24?style=flat&logo=debian&logoColor=white)](https://debian.org/)
+[![Windows Server](https://img.shields.io/badge/Windows_Server-2022-0078D6?style=flat&logo=windows&logoColor=white)](https://microsoft.com/)
+[![VMware](https://img.shields.io/badge/VMware-Workstation-607078?style=flat&logo=vmware&logoColor=white)](https://vmware.com/)
+[![Proxmox](https://img.shields.io/badge/Proxmox-VE-E57000?style=flat&logo=proxmox&logoColor=white)](https://proxmox.com/)
 [![pfSense](https://img.shields.io/badge/pfSense-Firewall_&_NAT-212121?style=flat&logo=pfsense&logoColor=white)](https://pfsense.org/)
-[![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI/CD-2088FF?style=flat&logo=githubactions&logoColor=white)](https://github.com/features/actions)
+[![iptables](https://img.shields.io/badge/iptables-Firewall-D22115?style=flat&logo=linux&logoColor=white)](https://netfilter.org/)
+[![UFW](https://img.shields.io/badge/UFW-Firewall-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![WireGuard](https://img.shields.io/badge/WireGuard-VPN-88171A?style=flat&logo=wireguard&logoColor=white)](https://wireguard.com/)
+[![Bind9](https://img.shields.io/badge/Bind9-DNS-005571?style=flat&logo=bind9&logoColor=white)](https://isc.org/bind/)
+[![DHCP](https://img.shields.io/badge/DHCP-ISC_Server-005571?style=flat&logo=linux&logoColor=white)](https://isc.org/)
+[![Nmap](https://img.shields.io/badge/Nmap-Scanning-4682B4?style=flat&logo=nmap&logoColor=white)](https://nmap.org/)
+[![tcpdump](https://img.shields.io/badge/tcpdump-Packet_Analysis-39457E?style=flat&logo=wireshark&logoColor=white)](https://tcpdump.org/)
+[![Active Directory](https://img.shields.io/badge/Active_Directory-DS_&_GPO-0078D6?style=flat&logo=windows&logoColor=white)](https://microsoft.com/)
+[![Nginx](https://img.shields.io/badge/Nginx-Web_Server-009639?style=flat&logo=nginx&logoColor=white)](https://nginx.org/)
+[![SSH](https://img.shields.io/badge/SSH-Secure_Administration-333333?style=flat&logo=openssh&logoColor=white)](https://openssh.com/)
+[![Docker](https://img.shields.io/badge/Docker-Conteneurisation-2496ED?style=flat&logo=docker&logoColor=white)](https://docker.com/)
+[![Docker Compose](https://img.shields.io/badge/Docker_Compose-Orchestration-2496ED?style=flat&logo=docker&logoColor=white)](https://docker.com/)
+[![Ansible](https://img.shields.io/badge/Ansible-Automation-EE0000?style=flat&logo=ansible&logoColor=white)](https://ansible.com/)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?style=flat&logo=terraform&logoColor=white)](https://terraform.io/)
+[![Azure](https://img.shields.io/badge/Azure-Cloud-0078D4?style=flat&logo=microsoftazure&logoColor=white)](https://azure.microsoft.com/)
+[![GitLab CI/CD](https://img.shields.io/badge/GitLab_CI%2FCD-Pipelines-FCA121?style=flat&logo=gitlab&logoColor=white)](https://about.gitlab.com/stages-devops-lifecycle/continuous-integration/)
 [![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?style=flat&logo=prometheus&logoColor=white)](https://prometheus.io/)
 [![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?style=flat&logo=grafana&logoColor=white)](https://grafana.com/)
-[![Windows Server](https://img.shields.io/badge/Windows_Server-Active_Directory-0078D6?style=flat&logo=windows&logoColor=white)](https://microsoft.com/)
-
----
-
-*Lab d'apprentissage progressif — 14 semaines · 3 soirs/semaine · 45 min/session*
+[![Bash](https://img.shields.io/badge/Bash-Scripting-4EAA25?style=flat&logo=gnubash&logoColor=white)](https://gnu.org/software/bash/)
+[![Python](https://img.shields.io/badge/Python-Automation-3776AB?style=flat&logo=python&logoColor=white)](https://python.org/)
+[![Git](https://img.shields.io/badge/Git-Version_Control-F05032?style=flat&logo=git&logoColor=white)](https://git-scm.com/)
+[![GitHub](https://img.shields.io/badge/GitHub-Versioning-181717?style=flat&logo=github&logoColor=white)](https://github.com/)
 
 </div>
 
 ---
 
-## Présentation
+## 📌 À propos
 
-Ce dépôt documente mon parcours d'apprentissage pratique en administration **Systèmes & Réseaux** dans le cadre de ma deuxième année de Master en Ingénierie Réseaux et Systèmes (2026–2027).
+**SysReseauDevSecOps-lab** est mon laboratoire technique consacré à l'administration système, aux réseaux, à la cybersécurité, au DevOps et au Cloud.
 
-L'objectif est de construire un **mini datacenter virtualisé** sur VMware Workstation couvrant l'ensemble des compétences attendues d'un ingénieur Sys&Réseaux en entreprise :
-- Administration Linux avancée (services, stockage, sécurité)
-- Segmentation réseau : VLAN, pare-feu pfSense, NAT, VPN WireGuard
-- Services réseau : DNS (Bind9), DHCP, Active Directory
-- Conteneurisation Docker et orchestration via Docker Compose
-- Automatisation de configuration avec Ansible
-- Pipeline CI/CD avec GitHub Actions
-- Supervision avec Prometheus et Grafana
+Ce dépôt regroupe mes travaux pratiques, configurations, scripts, architectures et projets techniques réalisés dans des environnements virtualisés.
 
-Chaque semaine est documentée avec les commandes apprises, les livrables produits et les difficultés rencontrées.
+L'objectif est de mettre en pratique les concepts étudiés à travers des environnements reproductibles, documentés et proches de cas d'utilisation réels.
 
 ---
 
-## Progression — 14 semaines
+## 🗂️ Organisation du laboratoire
 
-### Phase 1 — Administration Linux & Système
-- [ ] [Semaine 01 — Linux fondations & terminal](./01-linux-fondations/README.md)
-- [ ] [Semaine 02 — SSH sécurisé & Bash scripting](./02-ssh-bash/README.md)
-- [ ] [Semaine 03 — Stockage, logs & automatisation cron](./03-stockage-logs/README.md)
+Le dépôt est structuré autour de quatre piliers techniques :
 
-### Phase 2 — Réseaux & Sécurité
-- [ ] [Semaine 04 — Diagnostic réseau Linux & pare-feu UFW](./04-reseau-diagnostic/README.md)
-- [ ] [Semaine 05 — DNS (Bind9), DHCP & VPN WireGuard](./05-dns-dhcp-vpn/README.md)
-- [ ] [Semaine 06 — VLAN, pfSense & routage inter-VLAN](./06-vlan-pfsense/README.md)
+| Domaine | Contenu | Statut |
+|---|---|:---:|
+| 🐧 **[01-systeme-linux](./01-systeme-linux/)** | Administration, services, logs, Bash, SSH et sécurité Linux | ✅ |
+| 🌐 **[02-reseau-securite](./02-reseau-securite/)** | Diagnostic, firewall, DNS/DHCP, VPN, VLAN et pfSense | ✅ |
+| 🪟 **[03-systeme-windows-ad](./03-systeme-windows-ad/)** | Windows Server, AD DS, utilisateurs, groupes et GPO | 🔄 |
+| 🚀 **[04-devops-cloud](./04-devops-cloud/)** | Docker, Ansible, Terraform, Azure, CI/CD et observabilité | 🔄 |
 
-### Phase 3 — Virtualisation & Services d'entreprise
-- [ ] [Semaine 07 — Active Directory & Windows Server](./07-active-directory/README.md)
-- [ ] [Semaine 08 — Services internes, MySQL & prise en main à distance](./08-services-internes/README.md)
-- [ ] [Semaine 09 — Monitoring : Prometheus & Grafana](./09-monitoring/README.md)
-
-### Phase 4 — DevOps & Automatisation
-- [ ] [Semaine 10 — Docker & conteneurisation](./10-docker/README.md)
-- [ ] [Semaine 11 — Ansible : automatisation de configuration](./11-ansible/README.md)
-- [ ] [Semaine 12 — CI/CD avec GitHub Actions](./12-cicd/README.md)
-
-### Phase 5 — Portfolio & Préparation stage
-- [ ] [Semaine 13 — GitHub pro & documentation finale](./13-github-portfolio/README.md)
-- [ ] [Semaine 14 — CV, pitch STAR & simulation entretien](./14-cv-entretiens/README.md)
+> Chaque dossier possède sa propre documentation détaillée avec les configurations, commandes, tests et projets associés.
 
 ---
 
-## Stack technique
+## 📂 Structure du dépôt
 
-| Domaine | Technologies |
-|---|---|
-| Hyperviseur | VMware Workstation |
-| Systèmes | Ubuntu Server 22.04, Windows Server 2022 |
-| Réseau & Sécurité | pfSense, WireGuard, Bind9, isc-dhcp-server, UFW, iptables |
-| Annuaire | Active Directory, DHCP/DNS Windows Server |
-| Conteneurisation | Docker Engine, Docker Compose |
-| Automatisation | Ansible, Bash scripting |
-| CI/CD | GitHub Actions |
-| Monitoring | Prometheus, Grafana, Node Exporter |
-| Versioning | Git, GitHub |
+```text
+SysReseauDevSecOps-lab/
+│
+├── 01-systeme-linux/       ← Administration système, logs & Bash
+│
+├── 02-reseau-securite/     ← Diagnostic, pare-feu, DNS/DHCP, VPN & pfSense
+│
+├── 03-systeme-windows-ad/  ← Active Directory, GPO & services Windows
+│
+├── 04-devops-cloud/        ← Docker, Ansible, Terraform, Azure & CI/CD
+│
+└── README.md               ← Vitrine principale
+```
 
 ---
 
-## Suivi de progression
+## 🛠️ Environnement technique
 
-| Semaine | Statut | Compétence principale | Livrable |
-|---|---|---|---|
-| S01 | ✅ | Linux terminal | VM Ubuntu + scripts |
-| S02 | ⬜ | SSH + Bash | Script health_check.sh |
-| S03 | ⬜ | Stockage + Cron | LVM + backup_etc.sh |
-| S04 | ⬜ | Réseau + UFW | Cheatsheet réseau |
-| S05 | ⬜ | DNS + DHCP + VPN | Lab DNS fonctionnel |
-| S06 | ⬜ | VLAN + pfSense | Lab réseau 3 VLANs |
-| S07 | ⬜ | Active Directory | AD + GPO documenté |
-| S08 | ⬜ | Services internes | MySQL + RDP/SSH |
-| S09 | ⬜ | Monitoring | Dashboard Grafana |
-| S10 | ⬜ | Docker | Stack Docker Compose |
-| S11 | ⬜ | Ansible | Playbook master |
-| S12 | ⬜ | CI/CD | Pipeline GitHub Actions |
-| S13 | ⬜ | Portfolio | README pro |
-| S14 | ⬜ | Entretiens | Pitch STAR + CV |
+```text
+OS & Systèmes          Debian Server 22.04 • Windows Server 2022
+
+Virtualisation         VMware Workstation • Proxmox VE
+
+Réseau & Sécurité      iptables • UFW • pfSense • WireGuard
+                       Bind9 • DHCP • tcpdump • nmap
+
+Annuaire & Identités   Active Directory DS, utilisateurs/groupes, GPO
+
+Services Windows       DNS, DHCP 
+
+DevOps                 Docker • Docker Compose • Ansible
+                       Terraform • Git • GitLab CI/CD
+
+Cloud                  Microsoft Azure
+
+Observabilité          Prometheus • Grafana • Node Exporter
+
+Automatisation         Bash • Python
+```
+
+---
+
+## 🔐 Démarche & Rigueur Technique
+
+Chaque projet et laboratoire suit une méthodologie d'ingénierie rigoureuse :
+
+$$\text{Conception} \longrightarrow \text{Déploiement} \longrightarrow \text{Configuration} \longrightarrow \text{Sécurisation} \longrightarrow \text{Validation} \longrightarrow \text{Documentation}$$
+
+---
+
+### Principes directeurs appliqués dans chaque Lab :
+- **Segmentation & Isolation :** Cloisonnement des réseaux (VLANs, DMZ) et des services (conteneurs, règles pare-feu).
+- **Moindre privilège (Least Privilege) :** Restriction des accès (sudoers dédiés, clés SSH chiffrées, comptes de service dédiés).
+- **Automatisation :** Suppression des tâches répétitives via des scripts Bash.
+- **Traçabilité & Observabilité :** Journalisation centralisée (`journald`, `rsyslog`), suivi d'audit (`auditd`) et tableaux de bord.
+- **Validation & Recette :** Recette systématique des configurations (tests de montée en charge, scans Nmap, captures `tcpdump`).
+- **Documentation exhaustive :** Rédaction de bilans techniques et de guides de reproduction pour chaque infrastructure.
+
+---
+
+## 🎯 Objectif du dépôt
+
+Ce laboratoire évolue progressivement avec l'acquisition et la mise en pratique de nouvelles compétences dans les domaines :
+
+`System Administration` • `Networking` • `Cybersecurity` • `DevOps` • `Cloud` • `Automation`
+
+L'objectif est de construire un environnement technique cohérent permettant de **concevoir, configurer, sécuriser, automatiser et documenter des infrastructures informatiques**.
 
 ---
 
 <div align="center">
-*Étudiant M2 Ingénierie Réseaux et Systèmes · En recherche de stage (début 2027)*
+
+### Build • Secure • Automate • Monitor
+
+**SysReseauDevSecOps-lab**
+
 </div>

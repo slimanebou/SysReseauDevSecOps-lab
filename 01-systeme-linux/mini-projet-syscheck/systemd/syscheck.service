@@ -1,0 +1,17 @@
+[Unit]
+Description=Service de vérification système syscheck (Disque, CPU, RAM, Services)
+Documentation=https://github.com/SlimaneBOUAROUA/SysReseauDevSecOps-lab
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/syscheck.sh -q
+User=root
+Nice=10
+IOSchedulingClass=idle
+
+# Durcissement de sécurité
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

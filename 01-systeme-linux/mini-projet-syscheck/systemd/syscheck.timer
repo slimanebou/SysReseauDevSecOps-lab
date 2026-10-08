@@ -1,0 +1,10 @@
+[Unit]
+Description=Déclencheur automatique toutes les 5 minutes pour syscheck
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

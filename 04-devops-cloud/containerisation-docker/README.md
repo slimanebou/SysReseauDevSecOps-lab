@@ -1,11 +1,5 @@
 # 🐳 Docker — Cours complet & Aide-mémoire
 
-> **Auteur :** Slimane BOUAROUA
-> **Formation :** Master 2 Ingénierie Réseaux & Systèmes
-> **Orientation :** Systèmes & Réseaux · Cloud · DevOps · DevSecOps
-
----
-
 ## 🎯 À propos
 
 Ce dépôt rassemble une documentation complète sur Docker, de l'architecture interne jusqu'aux bonnes pratiques de sécurité en production. Il sert de référence technique personnelle et de support de révision.
@@ -1616,7 +1610,7 @@ docker compose up -d / down / ps / logs -f
 
 ## 18. Projet : secure-docker-stack
 
-> 🔗 **Dépôt :** [github.com/slimanebou/secure-docker-stack](https://github.com/slimanebou/secure-docker-stack) · 📁 **Dans ce lab :** [`secure-docker-stack/`](./secure-docker-stack)
+> 🔗 **Dépôt :** [github.com/slimanebou/secure-docker-stack](https://github.com/slimanebou/secure-docker-stack) ·
 
 Mise en pratique de l'ensemble de ce cours dans une stack multi-conteneurs sécurisée.
 
